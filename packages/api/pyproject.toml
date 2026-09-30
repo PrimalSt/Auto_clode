@@ -1,0 +1,17 @@
+[project]
+name = "autogenerator-api"
+version = "0.1.0"
+description = "Публичный фасад для своего кода и Jupyter: load_scenario, run, validate, inspect."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+    "autogenerator-worker",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.api"

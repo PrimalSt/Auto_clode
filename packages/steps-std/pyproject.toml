@@ -1,0 +1,41 @@
+[project]
+name = "autogenerator-steps-std"
+version = "0.1.0"
+description = "Встроенные шаги обработки, окна данных и агрегаты."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+    "polars>=1.30",
+]
+
+[project.entry-points."autogenerator.steps"]
+filter = "autogenerator.steps_std.steps:FilterStep"
+dedupe = "autogenerator.steps_std.steps:DedupeStep"
+formula = "autogenerator.steps_std.steps:FormulaStep"
+select = "autogenerator.steps_std.steps:SelectStep"
+
+[project.entry-points."autogenerator.windows"]
+report_period = "autogenerator.steps_std.windows:ReportPeriodWindow"
+previous_period = "autogenerator.steps_std.windows:PreviousPeriodWindow"
+same_period_last_year = "autogenerator.steps_std.windows:SamePeriodLastYearWindow"
+quarter_to_date = "autogenerator.steps_std.windows:QuarterToDateWindow"
+year_to_date = "autogenerator.steps_std.windows:YearToDateWindow"
+last_n = "autogenerator.steps_std.windows:LastNWindow"
+all = "autogenerator.steps_std.windows:AllWindow"
+range = "autogenerator.steps_std.windows:RangeWindow"
+
+[project.entry-points."autogenerator.aggregations"]
+sum = "autogenerator.steps_std.aggregations:SumAgg"
+count = "autogenerator.steps_std.aggregations:CountAgg"
+count_distinct = "autogenerator.steps_std.aggregations:CountDistinctAgg"
+mean = "autogenerator.steps_std.aggregations:MeanAgg"
+min = "autogenerator.steps_std.aggregations:MinAgg"
+max = "autogenerator.steps_std.aggregations:MaxAgg"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.steps_std"

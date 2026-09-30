@@ -1,0 +1,20 @@
+[project]
+name = "autogenerator-engine"
+version = "0.1.0"
+description = "Движок сценария: граф узлов, обработка, наборы данных и показатели."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+    "autogenerator-plugin-host",
+    "polars>=1.30",
+    "pyarrow>=17",
+    "sqlglot>=26",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.engine"
