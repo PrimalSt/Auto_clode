@@ -1,0 +1,30 @@
+# Источники данных примера. В приложении их настройки хранятся в базе; для CLI на этапе M0
+# они лежат рядом со сценарием. Названия столбцов в файлах связываются с id через name и
+# aliases: в февральской выгрузке столбцы называются иначе, в мартовской переставлены.
+
+- id: sales_crm
+  name: Продажи из CRM
+  format: csv
+  options: { encoding: cp1251, delimiter: ";" }
+  period_column: date
+  period_type: month
+  overlap_policy: replace_period
+  keys: [order_no]
+  columns:
+    - { id: date,     name: Дата заказа,  dtype: date,   aliases: [Дата] }
+    - { id: order_no, name: Номер заказа, dtype: string, aliases: [№ заказа] }
+    - { id: region,   name: Регион,       dtype: string }
+    - { id: manager,  name: Менеджер,     dtype: string }
+    - { id: amount,   name: Сумма,        dtype: float,  aliases: ["Сумма, руб.", "Сумма, ₽"] }
+
+- id: sales_plan
+  name: План продаж
+  format: xlsx
+  options: { sheet: План, header_row: 2 }
+  period_column: month
+  period_type: quarter
+  overlap_policy: replace_period
+  columns:
+    - { id: month,       name: Месяц,     dtype: date }
+    - { id: region,      name: Регион,    dtype: string }
+    - { id: plan_amount, name: "План, ₽", dtype: float, aliases: [План] }

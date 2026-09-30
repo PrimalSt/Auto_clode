@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Выгрузки-примеры хранятся байт в байт (Windows-1251, CRLF), как их отдают системы.
+examples/**/*.csv -text
+*.pptx binary
+*.potx binary
+*.xlsx binary
+*.parquet binary

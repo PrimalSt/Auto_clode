@@ -1,0 +1,137 @@
+# Ежемесячный отчёт по продажам — пример сценария этапа M0.
+# Запуск из корня репозитория:  uv run agen run examples/sales/scenario.yaml
+# Выгрузки берутся из data/<вход>/ по порядку имён; отчётный период по умолчанию —
+# последний месяц основного входа (март 2026).
+
+spec_version: 1
+name: Ежемесячный отчёт по продажам
+theme: ../templates/synthetic.pptx
+output_name: "Отчёт_продажи_{period}"
+
+inputs:
+  - id: sales
+    source: sales_crm
+    main: true
+    pipeline:
+      - { id: dedupe_orders, type: dedupe, by: [order_no], keep: last }
+      - { id: positive_only, type: filter, where: "amount > 0" }
+      - { id: net_of_vat, type: formula, column: amount_net, expr: "amount / 1.2" }
+  - id: plan
+    source: sales_plan
+
+datasets:
+  - id: by_month
+    label: Выручка по месяцам квартала
+    input: sales
+    window: quarter_to_date
+    group_by: [{ column: date, bucket: month }]
+    aggregate:
+      - { column: amount_net, fn: sum, as: revenue }
+      - { fn: count, as: orders }
+
+  - id: by_region
+    label: Регионы за месяц
+    input: sales
+    window: report_period
+    group_by: [region]
+    aggregate:
+      - { column: amount_net, fn: sum, as: revenue }
+      - { fn: count, as: orders }
+      - { column: amount_net, fn: mean, as: avg_check }
+    sort: [-revenue]
+
+  - id: top_managers
+    label: Лучшие менеджеры месяца
+    input: sales
+    window: report_period
+    group_by: [manager]
+    aggregate: [{ column: amount_net, fn: sum, as: revenue }]
+    sort: [-revenue]
+    top: 5
+
+metrics:
+  - { id: revenue,      input: sales, window: report_period,   column: amount_net,  fn: sum }
+  - { id: revenue_prev, input: sales, window: previous_period, column: amount_net,  fn: sum }
+  - { id: revenue_qtd,  input: sales, window: quarter_to_date, column: amount_net,  fn: sum }
+  - { id: orders,       input: sales, window: report_period,   fn: count }
+  - { id: plan,         input: plan,  window: report_period,   column: plan_amount, fn: sum }
+  - { id: plan_qtd,     input: plan,  window: quarter_to_date, column: plan_amount, fn: sum }
+  - { id: plan_done,     formula: "revenue / plan" }
+  - { id: plan_done_qtd, formula: "revenue_qtd / plan_qtd" }
+
+slides:
+  - layout: title
+    blocks:
+      - { type: text, slot: title, text: "Продажи: {{ period.label }}" }
+      - { type: text, slot: subtitle, text: "Ежемесячный отчёт · собран Autogenerator" }
+
+  - layout: title_and_content
+    blocks:
+      - { type: text, slot: title, text: "Итоги: {{ period.label }}" }
+      - type: text
+        slot: body
+        text: |-
+          Выручка без НДС: {{ metrics.revenue | money(scale='million', decimals=1) }}
+          К прошлому месяцу: {{ change_pct(metrics.revenue, metrics.revenue_prev) | percent(sign=true) }}
+          Заказов: {{ metrics.orders | number }}
+          План месяца выполнен на {{ metrics.plan_done | percent }}
+
+  - layout: title_and_content
+    blocks:
+      - { type: text, slot: title, text: "Динамика: {{ period.quarter_label }}" }
+      - type: chart
+        slot: body
+        chart: column
+        dataset: by_month
+        x: date
+        series: [{ column: revenue, name: "Выручка без НДС, млн ₽" }]
+        number_format: "#,##0.0,,"   # ",," — в миллионах
+        data_labels: true
+
+  - layout: title_and_two_content
+    blocks:
+      - { type: text, slot: title, text: "Регионы: {{ period.label }}" }
+      - type: table
+        slot: left
+        dataset: by_region
+        columns:
+          - { column: region, header: Регион }
+          - { column: revenue, header: "Выручка, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
+          - { column: orders, header: Заказов }
+          - { column: avg_check, header: "Средний чек, ₽", format: { kind: number, decimals: 0 } }
+      - type: chart
+        slot: right
+        chart: bar
+        dataset: by_region
+        x: region
+        series: [{ column: revenue, name: "Выручка без НДС, млн ₽" }]
+        number_format: "#,##0.0,,"
+        data_labels: true
+
+  - layout: title_and_content
+    blocks:
+      - type: text
+        slot: title
+        font_size: 32
+        text: >-
+          {{ period.quarter_label }}: {{ metrics.revenue_qtd | money(scale='million', decimals=1) }},
+          план {{ metrics.plan_done_qtd | percent }}
+      - type: table
+        slot: body
+        dataset: by_month
+        columns:
+          - { column: date, header: Месяц }
+          - { column: revenue, header: "Выручка без НДС, ₽" }
+          - { column: orders, header: Заказов }
+
+  - layout: title_only
+    blocks:
+      - { type: text, slot: title, text: "Лучшие менеджеры: {{ period.label }}" }
+      - type: chart
+        slot: body
+        chart: bar
+        dataset: top_managers
+        x: manager
+        series: [{ column: revenue, name: "Выручка без НДС, млн ₽" }]
+        number_format: "#,##0.00,,"
+        data_labels: true
