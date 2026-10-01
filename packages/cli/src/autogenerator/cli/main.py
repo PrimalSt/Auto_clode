@@ -1,7 +1,8 @@
 """Команда ``agen`` (ARCHITECTURE.md, раздел 6.7).
 
-Этап M0: CLI вызывает движок напрямую через фасад ``api``. Когда появится приложение
-(этап M4), при открытом приложении CLI будет работать через его сервер.
+CLI вызывает движок напрямую через фасад ``api`` и сам пишет метаданные папки данных,
+взяв её блокировку. Когда появится приложение (этап M4), при открытом приложении CLI
+будет работать через его сервер.
 """
 
 from __future__ import annotations
@@ -14,7 +15,10 @@ from typing import Annotated
 import typer
 
 from autogenerator import api
-from autogenerator.contracts import AgenError, IssueLevel, ReadOptions, RunResult
+from autogenerator.contracts import AgenError, IssueLevel, RunResult
+
+from .data import history, source_app, upload_app
+from .output import LEVEL_MARK, fail, home_option, print_snapshot, read_options_from, utf8_output
 
 app = typer.Typer(
     name="agen",
@@ -24,12 +28,13 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
-LEVEL_MARK = {IssueLevel.INFO: "·", IssueLevel.WARNING: "!", IssueLevel.ERROR: "✗"}
+app.add_typer(source_app, name="source")
+app.add_typer(upload_app, name="upload")
+app.command()(history)
 
 
 def _fail(e: AgenError) -> None:
-    typer.echo(f"Ошибка: {e}", err=True)
-    raise typer.Exit(1)
+    fail(e)
 
 
 def _parse_inputs(values: list[str]) -> dict[str, list[str]]:
@@ -47,7 +52,8 @@ def _print_result(res: RunResult, verbose: bool) -> None:
         typer.echo(f"Отчётный период: {res.period.key}")
     for inp, uploads in res.inputs.items():
         parts = ", ".join(f"{Path(u['file']).name} ({u['period']}, {u['rows']} строк)" for u in uploads)
-        typer.echo(f"Вход {inp}: {parts}")
+        where = " (история из папки данных)" if inp in res.from_home else ""
+        typer.echo(f"Вход {inp}{where}: {parts}")
     for n in res.nodes:
         if verbose or n.state != "ok":
             rows = f" {n.rows_in}→{n.rows_out} строк" if n.rows_in is not None else ""
@@ -89,9 +95,17 @@ def run(
         typer.Option(help="Сохранить промежуточные данные в папку (для отладки модулей)"),
     ] = None,
     accept_cast_errors: Annotated[bool, typer.Option(help="Принять загрузки с нераспознанными значениями")] = False,
+    no_home: Annotated[
+        bool, typer.Option("--no-home", help="Не брать историю из папки данных, только файлы выгрузок")
+    ] = False,
+    home: Annotated[Path | None, home_option] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Показать все узлы и замечания")] = False,
 ) -> None:
-    """Собрать отчёт по сценарию."""
+    """Собрать отчёт по сценарию.
+
+    История входа — из файлов --input или --data; если их нет — из папки данных (agen upload add),
+    когда там есть источник входа; иначе — из папки data рядом со сценарием.
+    """
     try:
         res = api.run(
             scenario,
@@ -104,6 +118,8 @@ def run(
             output_dir=output_dir,
             workdir=workdir,
             accept_cast_errors=accept_cast_errors,
+            home=home,
+            use_home=False if no_home else None,
         )
     except AgenError as e:
         _fail(e)
@@ -142,31 +158,26 @@ def validate(
 def inspect(
     file: Annotated[Path, typer.Argument(help="Файл выгрузки: CSV или Excel")],
     format: Annotated[str | None, typer.Option(help="csv или xlsx")] = None,
-    encoding: Annotated[str | None, typer.Option()] = None,
-    delimiter: Annotated[str | None, typer.Option()] = None,
-    header_row: Annotated[int, typer.Option(help="Строка заголовков, с единицы")] = 1,
-    sheet: Annotated[str | None, typer.Option(help="Лист Excel")] = None,
+    encoding: Annotated[str | None, typer.Option(help="utf-8, utf-8-sig, cp1251; по умолчанию — определить")] = None,
+    delimiter: Annotated[str | None, typer.Option(help="Разделитель CSV; tab — табуляция")] = None,
+    no_quote: Annotated[bool, typer.Option("--no-quote", help="В CSV нет кавычек")] = False,
+    header_row: Annotated[int | None, typer.Option(help="Строка заголовков, с единицы; по умолчанию — найти")] = None,
+    sheet: Annotated[list[str] | None, typer.Option(help="Лист Excel (имя или номер с нуля); можно несколько")] = None,
+    preview: Annotated[int, typer.Option(help="Показать первые N строк")] = 0,
+    no_profile: Annotated[bool, typer.Option("--no-profile", help="Без профиля столбцов")] = False,
     json: Annotated[bool, typer.Option("--json", help="Снимок структуры в JSON")] = False,
 ) -> None:
-    """Структура файла выгрузки: как он прочитан и какие типы у столбцов."""
-    opts = ReadOptions(encoding=encoding, delimiter=delimiter, header_row=header_row, sheet=sheet)
+    """Структура файла выгрузки: как он прочитан, типы и профиль столбцов по выборке."""
+    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
     try:
-        snap = api.inspect(file, opts, format)
+        snap = api.inspect(file, opts, format, profile=not no_profile)
     except AgenError as e:
         _fail(e)
         return
     if json:
         typer.echo(snap.model_dump_json(indent=2))
         return
-    o = snap.options
-    how = f"кодировка {o.encoding}, разделитель {o.delimiter!r}" if o.encoding else f"лист {o.sheet!r}"
-    typer.echo(
-        f"{file.name}: {snap.format}, {how}, заголовки в строке {o.header_row}; выборка {snap.sample_rows} строк"
-    )
-    width = max(len(c.source_name) for c in snap.columns) + 2
-    for c in snap.columns:
-        fmt = f" ({c.format})" if c.format else ""
-        typer.echo(f"  {c.source_name:<{width}}{c.dtype.value:<9}{fmt:<22} например: {', '.join(c.sample[:3])}")
+    print_snapshot(file, snap, preview)
 
 
 @app.command()
@@ -223,17 +234,8 @@ def version() -> None:
     typer.echo(f"Autogenerator {v('autogenerator-cli')}, API плагинов {PLUGIN_API_VERSION}")
 
 
-def _utf8_output() -> None:
-    """В Windows вывод в канал или файл идёт в кодировке системы, и русский текст ломается.
-    В консоли Python и так пишет Юникодом; для канала и файла включаем UTF-8."""
-    for stream in (sys.stdout, sys.stderr):
-        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
-        if enc != "utf8" and hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
-
-
 def main() -> None:
-    _utf8_output()
+    utf8_output()
     app()
 
 

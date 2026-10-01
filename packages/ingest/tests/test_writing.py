@@ -4,8 +4,16 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from autogenerator.contracts import AgenError, DType, SourceSpec, UploadStatus
-from autogenerator.ingest import inspect_file, read_upload_table, write_upload
+from autogenerator.contracts import AgenError, DType, ErrorCode, SourceSpec, UploadStatus
+from autogenerator.ingest import (
+    FilePart,
+    header_snapshot,
+    inspect_file,
+    profile_frame,
+    profile_upload,
+    read_upload_table,
+    write_upload,
+)
 
 SOURCE = SourceSpec(
     id="sales",
@@ -128,3 +136,117 @@ def test_failed_write_leaves_nothing(tmp_path: Path, registry, jsonl):
             out_dir=tmp_path / "up",
         )
     assert list(tmp_path.iterdir()) == [f]
+
+
+def test_inspect_profile_and_header_snapshot(tmp_path: Path, registry, jsonl):
+    rows = [[f"{d:02d}.01.2026", "Москва" if d % 3 else "Казань", None if d == 5 else str(d)] for d in range(1, 31)]
+    f = jsonl(tmp_path / "a.jsonl", ["Дата", "Регион", "Сумма"], rows)
+    snap = inspect_file(f, registry)
+    prof = {c.source_name: c.profile for c in snap.columns}
+    assert prof["Дата"].min == "2026-01-01" and prof["Дата"].max == "2026-01-30"
+    assert prof["Регион"].unique == 2 and prof["Регион"].top[0].value == "Москва"
+    assert prof["Сумма"].nulls == 1 and not prof["Сумма"].exact
+    assert snap.file_size > 0 and snap.preview[0] == ["01.01.2026", "Москва", "1"]
+    head = header_snapshot(f, registry)
+    assert head.names() == ["Дата", "Регион", "Сумма"] and head.sample_rows == 0
+
+
+def test_profile_frame_skips_top_for_unique_columns():
+    df = pl.DataFrame({"id": [str(i) for i in range(50)], "k": ["a", "b"] * 25})
+    prof = profile_frame(df)
+    assert prof["id"].top_skipped and prof["id"].top == []
+    assert [(t.value, t.count) for t in prof["k"].top] == [("a", 25), ("b", 25)]
+
+
+def test_exact_profile_of_written_upload(tmp_path: Path, registry, jsonl):
+    f = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.01.2026", "1"], ["03.02.2026", "2"], [None, "3"]])
+    res = write_upload(
+        f,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+    )
+    prof = profile_upload(res.data_uri, ["date", "amount", "channel"])
+    assert (prof["date"].min, prof["date"].max, prof["date"].nulls) == ("2026-01-01", "2026-02-03", 1)
+    assert prof["amount"].exact and prof["amount"].rows == 3
+    assert prof["channel"].nulls == 3
+
+
+def test_blank_rows_are_skipped(tmp_path: Path, registry, jsonl):
+    f = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.01.2026", "1"], [None, None], ["02.01.2026", "2"]])
+    res = write_upload(
+        f,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+    )
+    assert (res.rows, res.empty_rows, res.null_period_rows) == (2, 1, 0)
+    # Номера строк — как в файле: пустая вторая строка пропущена, третья осталась третьей.
+    assert pl.from_arrow(read_upload_table(res.data_uri))["_row"].to_list() == [1, 3]
+
+
+def test_progress_and_cancel(tmp_path: Path, registry, jsonl):
+    f = jsonl(tmp_path / "a.jsonl", ["Дата"], [[f"{d:02d}.01.2026"] for d in range(1, 31)])
+    events = []
+    kw = dict(source=SOURCE, mapping={"Дата": "date"}, upload_id="u", upload_seq=1, batch_rows=10)
+    write_upload(f, registry, out_dir=tmp_path / "ok", progress=events.append, **kw)
+    assert [e.done for e in events if e.stage == "запись"] == [10, 20, 30]
+    calls = iter(range(100))
+    with pytest.raises(AgenError) as err:
+        write_upload(f, registry, out_dir=tmp_path / "cancel", cancelled=lambda: next(calls) >= 1, **kw)
+    assert err.value.code == ErrorCode.CANCELLED
+    # После отмены не остаётся ни загрузки, ни временной папки.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.jsonl", "ok"]
+
+
+def test_parts_of_one_export_become_one_upload(tmp_path: Path, registry, jsonl):
+    """Выгрузка из двух файлов: столбцы во втором в другом порядке, строки нумеруются
+    сквозь оба файла, строки с ошибками — по файлу в папке rejects."""
+    a = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.03.2026", "1"], ["02.03.2026", "2"]])
+    b = jsonl(tmp_path / "b.jsonl", ["Сумма", "Дата"], [["3", "03.03.2026"], ["сто", "04.03.2026"]])
+    res = write_upload(
+        a,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        more=[FilePart(b, {"Сумма": "amount", "Дата": "date"})],
+    )
+    t = pl.from_arrow(read_upload_table(res.data_uri))
+    assert t["_row"].to_list() == [1, 2, 3, 4]
+    assert t["amount"].to_list() == [1.0, 2.0, 3.0, None]
+    assert (res.rows, res.period_min, res.period_max) == (4, date(2026, 3, 1), date(2026, 3, 4))
+    rejects = pl.read_parquet(res.rejects_uri)
+    assert res.rejects_uri.endswith("/rejects")
+    assert rejects["_file"].to_list() == ["b.jsonl"] and rejects["_row"].to_list() == [4]
+
+
+def test_fixed_period_for_snapshot_exports(tmp_path: Path, registry, jsonl):
+    source = SourceSpec(
+        id="clients",
+        name="Клиенты",
+        period_column="period",
+        period_from="upload",
+        columns=[{"id": "period", "name": "Период загрузки", "dtype": "date"}, {"id": "client", "name": "Клиент"}],
+    )
+    f = jsonl(tmp_path / "a.jsonl", ["Клиент"], [["a"], ["b"]])
+    res = write_upload(
+        f,
+        registry,
+        source=source,
+        mapping={"Клиент": "client"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        fixed_period=date(2026, 1, 1),
+    )
+    assert res.months == ["2026-01"] and res.period_min == res.period_max == date(2026, 1, 1)
+    assert pl.from_arrow(read_upload_table(res.data_uri))["period"].to_list() == [date(2026, 1, 1)] * 2

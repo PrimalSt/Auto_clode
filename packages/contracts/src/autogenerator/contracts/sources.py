@@ -34,15 +34,39 @@ class OverlapPolicy(StrEnum):
     ASK = "ask"
 
 
+class PeriodFrom(StrEnum):
+    """Откуда берётся период строк выгрузки."""
+
+    COLUMN = "column"
+    """Из столбца с датами в файле (дата заказа, дата оплаты)."""
+    UPLOAD = "upload"
+    """Из загрузки: выгрузка — срез на месяц без столбца с этим месяцем (например, список
+    клиентов на конец месяца). Период берётся из имени файла или задаётся при
+    загрузке, а столбец периода заполняется началом периода у всех строк."""
+
+
 class ReadOptions(BaseModel):
-    """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же."""
+    """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же.
+
+    Пустое поле — «определить по файлу»: читатель заполняет его сам (``sniff``).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     encoding: str | None = Field(None, description="utf-8, utf-8-sig или cp1251; пусто — определить")
     delimiter: str | None = Field(None, description="Разделитель CSV; пусто — определить")
-    header_row: int = Field(1, ge=1, description="Номер строки заголовков, с единицы")
-    sheet: str | int | None = Field(None, description="Лист Excel: имя или номер с нуля")
+    quote: str | None = Field('"', description="Кавычки CSV; пусто — в файле нет кавычек")
+    header_row: int | None = Field(
+        None,
+        ge=1,
+        description="Номер строки заголовков, с единицы; пусто — определить (первая строка, где "
+        "большинство ячеек заполнено текстом)",
+    )
+    sheet: str | int | list[str | int] | None = Field(
+        None,
+        description="Лист Excel: имя, номер с нуля или список листов одной выгрузки; пусто — первый лист и все "
+        "следующие листы с такой же шапкой (выгрузки больше 1 048 576 строк Excel разбивает на листы)",
+    )
 
     def merged(self, other: ReadOptions | None) -> ReadOptions:
         """Заполнить пустые поля значениями из ``other`` (обычно — из автоопределения)."""
@@ -51,6 +75,13 @@ class ReadOptions(BaseModel):
         data = other.model_dump()
         data.update({k: v for k, v in self.model_dump(exclude_unset=True).items() if v is not None})
         return ReadOptions(**data)
+
+    @property
+    def sheets(self) -> list[str | int] | None:
+        """Листы списком; ``None`` — определить."""
+        if self.sheet is None:
+            return None
+        return list(self.sheet) if isinstance(self.sheet, list) else [self.sheet]
 
 
 class ColumnSpec(BaseModel):
@@ -62,6 +93,9 @@ class ColumnSpec(BaseModel):
     id: str
     name: str
     dtype: DType = DType.STRING
+    format: str | None = Field(
+        None, description="Формат даты или даты и времени в файле, например %d.%m.%Y; пусто — определить"
+    )
     aliases: list[str] = Field(default_factory=list)
 
     @field_validator("id")
@@ -84,8 +118,16 @@ class SourceSpec(BaseModel):
     options: ReadOptions = Field(default_factory=ReadOptions)
     period_column: str
     period_type: PeriodUnit = PeriodUnit.MONTH
+    period_from: PeriodFrom = Field(
+        PeriodFrom.COLUMN,
+        description="column — период по датам столбца period_column; upload — период задаётся при загрузке "
+        "(имя файла или --period), столбец period_column в файле не ищется и заполняется началом периода",
+    )
     overlap_policy: OverlapPolicy = OverlapPolicy.REPLACE_PERIOD
     keys: list[str] = Field(default_factory=list)
+    keep_originals: bool = Field(
+        False, description="Хранить исходные файлы всех загрузок; по умолчанию — только до следующей загрузки"
+    )
     columns: list[ColumnSpec]
 
     @field_validator("id")
@@ -105,6 +147,8 @@ class SourceSpec(BaseModel):
             raise ValueError(f"Столбец периода «{self.period_column}» не описан в columns")
         if self.column(self.period_column).dtype not in (DType.DATE, DType.DATETIME):
             raise ValueError(f"Столбец периода «{self.period_column}» должен иметь тип date или datetime")
+        if self.period_from == PeriodFrom.UPLOAD and self.period_type == PeriodUnit.RANGE:
+            raise ValueError("Период, который задаётся при загрузке, должен быть календарным: day, week, month…")
         missing_keys = [k for k in self.keys if k not in ids]
         if missing_keys:
             raise ValueError(f"Ключевые столбцы не описаны в columns: {', '.join(missing_keys)}")
@@ -119,3 +163,10 @@ class SourceSpec(BaseModel):
     @property
     def dtypes(self) -> dict[str, DType]:
         return {c.id: c.dtype for c in self.columns}
+
+    @property
+    def file_columns(self) -> list[ColumnSpec]:
+        """Столбцы, которые ищутся в файле: все, кроме столбца периода, заданного при загрузке."""
+        if self.period_from == PeriodFrom.UPLOAD:
+            return [c for c in self.columns if c.id != self.period_column]
+        return self.columns

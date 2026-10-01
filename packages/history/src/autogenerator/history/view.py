@@ -20,6 +20,7 @@ from autogenerator.contracts import (
     HistoryManifest,
     OverlapPolicy,
     Period,
+    PeriodFrom,
     PeriodUnit,
     UploadRef,
 )
@@ -94,10 +95,20 @@ def _bound(value: date, dtype: DType) -> pl.Expr:
     return pl.lit(value, dtype=pl.Date())
 
 
-def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None) -> list[str]:
-    """Файлы загрузки, пропуская месяцы вне границ: раскладка по месяцам для этого и нужна."""
+def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None, by_upload: bool = False) -> list[str]:
+    """Файлы загрузки, пропуская месяцы вне границ: раскладка по месяцам для этого и нужна.
+
+    ``by_upload`` — период задаётся при загрузке: все строки в периоде загрузки, и загрузка
+    берётся или пропускается целиком (папка месяца могла устареть после правки периода).
+    """
     root = Path(up.uri)
     files: list[str] = []
+    if by_upload:
+        if (lower is not None and up.period.end_exclusive <= lower) or (
+            upper_exclusive is not None and up.period.start >= upper_exclusive
+        ):
+            return []
+        return [str(f) for f in sorted(root.glob("month=*/*.parquet"))]
     lo = lower.strftime("%Y-%m") if lower else None
     hi = upper_exclusive.strftime("%Y-%m") if upper_exclusive else None
     for d in sorted(root.glob("month=*")):
@@ -116,7 +127,8 @@ def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None
 def _scan_upload(
     manifest: HistoryManifest, up: UploadRef, lower: date | None, upper_exclusive: date | None
 ) -> pl.LazyFrame | None:
-    files = _month_files(up, lower, upper_exclusive)
+    by_upload = manifest.period_from == PeriodFrom.UPLOAD
+    files = _month_files(up, lower, upper_exclusive, by_upload)
     if not files:
         return None
     lf = pl.scan_parquet(files, hive_partitioning=False)
@@ -124,7 +136,10 @@ def _scan_upload(
     exprs = []
     for cid, dtype in manifest.columns.items():
         target = _POLARS_TYPES[dtype]
-        if cid in present:
+        if by_upload and cid == manifest.period_column:
+            # Период задан при загрузке и мог быть поправлен позже: берём его из метаданных.
+            exprs.append(_bound(up.period.start, dtype).cast(target).alias(cid))
+        elif cid in present:
             # Тип столбца могли поменять после загрузки: приводим при чтении, файлы не переписываем.
             exprs.append(pl.col(cid).cast(target, strict=False))
         else:
@@ -140,7 +155,8 @@ def history_view(
     lower: date | None = None,
     upper_exclusive: date | None = None,
 ) -> pl.LazyFrame:
-    """Ленивая таблица действующей истории по правилу пересечения источника.
+    """Ленивая таблица действующей истории по правилам пересечения: источника или, при
+    правиле «ask», выбранным для каждой загрузки.
 
     ``columns`` — какие столбцы нужны (столбец периода и служебные добавляются всегда);
     ``lower`` и ``upper_exclusive`` — границы по столбцу периода.
@@ -152,45 +168,10 @@ def history_view(
         raise AgenError(ErrorCode.HISTORY_EMPTY, f"У источника {manifest.source_id} нет загрузок")
 
     policy = manifest.overlap_policy
-    if policy == OverlapPolicy.ASK:
-        raise AgenError(
-            ErrorCode.NOT_IMPLEMENTED,
-            f"Правило пересечения «ask» у источника {manifest.source_id} требует интерфейса; "
-            "в командной строке выберите другое правило",
-        )
-    if policy == OverlapPolicy.REPLACE_ALL:
-        active = [active[-1]]
-
-    # Месяцы вне границ пропускаются, но не для merge_dedupe: там новейшая версия строки
-    # может лежать в другом месяце, чем старая, и пропуск месяца изменил бы результат.
-    prune = policy != OverlapPolicy.MERGE_DEDUPE
-    parts: list[pl.LazyFrame] = []
-    for up in active:
-        lf = _scan_upload(manifest, up, lower if prune else None, upper_exclusive if prune else None)
-        if lf is None:
-            continue
-        if policy == OverlapPolicy.REPLACE_PERIOD:
-            for later in active:
-                if later.seq <= up.seq:
-                    continue
-                if later.period.end_exclusive <= up.period.start or later.period.start >= up.period.end_exclusive:
-                    continue
-                covered = (pl.col(pc) >= _bound(later.period.start, ptype)) & (
-                    pl.col(pc) < _bound(later.period.end_exclusive, ptype)
-                )
-                # Строки без даты не теряются молча: fill_null(False) оставляет их.
-                lf = lf.filter(~covered.fill_null(False))
-        parts.append(lf)
-
-    lf = pl.concat(parts, how="diagonal_relaxed") if parts else _empty(manifest)
-
     if policy == OverlapPolicy.MERGE_DEDUPE:
-        if not manifest.keys:
-            raise AgenError(
-                ErrorCode.SPEC_INVALID,
-                f"Для правила merge_dedupe у источника {manifest.source_id} нужны ключевые столбцы (keys)",
-            )
-        lf = lf.sort(["_upload_seq", "_row"]).unique(subset=manifest.keys, keep="last", maintain_order=True)
+        lf = _merge_dedupe(manifest, active)
+    else:
+        lf = _layered(manifest, active, lower, upper_exclusive)
 
     if lower is not None:
         lf = lf.filter(pl.col(pc) >= _bound(lower, ptype))
@@ -200,6 +181,89 @@ def history_view(
         wanted = list(dict.fromkeys([pc, *columns, *SERVICE_COLUMNS]))
         lf = lf.select([c for c in wanted if c in lf.collect_schema().names()])
     return lf
+
+
+def _merge_dedupe(manifest: HistoryManifest, active: list[UploadRef]) -> pl.LazyFrame:
+    """Правило источника ``merge_dedupe``: все загрузки вместе, по ключам остаётся строка
+    из самой новой. Месяцы не пропускаются: новейшая версия строки может лежать в другом
+    месяце, чем старая, и пропуск месяца изменил бы результат."""
+    _require_keys(manifest)
+    parts = [lf for up in active if (lf := _scan_upload(manifest, up, None, None)) is not None]
+    lf = pl.concat(parts, how="diagonal_relaxed") if parts else _empty(manifest)
+    return lf.sort(["_upload_seq", "_row"]).unique(subset=manifest.keys, keep="last", maintain_order=True)
+
+
+def _layered(
+    manifest: HistoryManifest, active: list[UploadRef], lower: date | None, upper_exclusive: date | None
+) -> pl.LazyFrame:
+    """Загрузки по порядку: каждая ложится на более ранние по своему правилу.
+
+    Правило источника действует на все загрузки; при правиле «ask» у каждой загрузки своё,
+    выбранное при загрузке (``UploadRef.overlap_policy``). ``replace_period`` убирает из
+    ранних загрузок строки с датой внутри своего периода, ``replace_all`` — ранние загрузки
+    целиком, ``merge_dedupe`` — строки ранних загрузок с теми же ключами, ``append`` ничего
+    не убирает.
+    """
+    pc = manifest.period_column
+    ptype = manifest.columns[pc]
+    rules = {up.id: _rule(manifest, up, active[:i]) for i, up in enumerate(active)}
+    last_full = max((i for i, up in enumerate(active) if rules[up.id] == OverlapPolicy.REPLACE_ALL), default=0)
+    active = active[last_full:]
+    # Месяцы вне границ можно пропустить, пока ни одна загрузка не убирает строки по ключам.
+    by_keys = any(rules[up.id] == OverlapPolicy.MERGE_DEDUPE for up in active[1:])
+    if by_keys:
+        _require_keys(manifest)
+    prune = not by_keys
+    scans = {
+        up.id: _scan_upload(manifest, up, lower if prune else None, upper_exclusive if prune else None) for up in active
+    }
+    parts: list[pl.LazyFrame] = []
+    for i, up in enumerate(active):
+        lf = scans[up.id]
+        if lf is None:
+            continue
+        for later in active[i + 1 :]:
+            rule = rules[later.id]
+            if rule == OverlapPolicy.REPLACE_PERIOD:
+                if later.period.end_exclusive <= up.period.start or later.period.start >= up.period.end_exclusive:
+                    continue
+                covered = (pl.col(pc) >= _bound(later.period.start, ptype)) & (
+                    pl.col(pc) < _bound(later.period.end_exclusive, ptype)
+                )
+                # Строки без даты не теряются молча: fill_null(False) оставляет их.
+                lf = lf.filter(~covered.fill_null(False))
+            elif rule == OverlapPolicy.MERGE_DEDUPE:
+                newer = scans[later.id]
+                if newer is not None:
+                    lf = lf.join(newer.select(manifest.keys).unique(), on=manifest.keys, how="anti", nulls_equal=True)
+        parts.append(lf)
+    return pl.concat(parts, how="diagonal_relaxed") if parts else _empty(manifest)
+
+
+def _rule(manifest: HistoryManifest, up: UploadRef, earlier: list[UploadRef]) -> OverlapPolicy:
+    """Правило загрузки. При правиле источника «ask» выбор нужен, только если период
+    загрузки пересекается с более ранними; без пересечения загрузка просто добавляется."""
+    rule = manifest.policy_of(up)
+    if rule != OverlapPolicy.ASK:
+        return rule
+    p = up.period
+    if not any(e.period.start < p.end_exclusive and p.start < e.period.end_exclusive for e in earlier):
+        return OverlapPolicy.APPEND
+    raise AgenError(
+        ErrorCode.OVERLAP_CHOICE,
+        f"Загрузка {up.id} источника {manifest.source_id} пересекается с более ранними, "
+        "а правило пересечения для неё не выбрано",
+        hint="Выберите правило при загрузке (agen upload … --overlap replace_period) "
+        "или задайте его в настройках источника.",
+    )
+
+
+def _require_keys(manifest: HistoryManifest) -> None:
+    if not manifest.keys:
+        raise AgenError(
+            ErrorCode.SPEC_INVALID,
+            f"Для правила merge_dedupe у источника {manifest.source_id} нужны ключевые столбцы (keys)",
+        )
 
 
 def _empty(manifest: HistoryManifest) -> pl.LazyFrame:

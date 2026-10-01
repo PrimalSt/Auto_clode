@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from autogenerator.contracts import Period, PeriodUnit
-from autogenerator.contracts.periods import add_months
+from autogenerator.contracts.periods import add_months, month_of_word
 
 
 def test_add_months_clamps_day():
@@ -53,3 +53,25 @@ def test_range_shift_keeps_length():
     prev = r.shift(-1)
     assert prev.days == r.days == 17
     assert prev.end_exclusive == r.start
+
+
+@pytest.mark.parametrize(
+    ("word", "month"),
+    [
+        ("январь", 1),
+        ("Января", 1),
+        ("январе", 1),
+        ("янв", 1),
+        ("марта", 3),
+        ("мае", 5),
+        ("ноябре", 11),
+        ("Jan", 1),
+        ("April", 4),
+        ("noyabr", 11),
+        ("мама", None),
+        ("маркетинг", None),
+        ("for", None),
+    ],
+)
+def test_month_of_word(word, month):
+    assert month_of_word(word) == month

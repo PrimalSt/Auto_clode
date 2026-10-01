@@ -16,7 +16,8 @@ import polars as pl
 
 from autogenerator.contracts import AgenError, HistoryManifest
 
-from .view import coverage, default_report_period, history_view
+from .coverage import coverage_report
+from .view import default_report_period, history_view
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,8 +30,14 @@ def main(argv: list[str] | None = None) -> int:
     m = HistoryManifest.model_validate_json(Path(a.manifest).read_text(encoding="utf-8"))
     print(f"Источник {m.source_id}: тип периода {m.period_type}, правило {m.overlap_policy}")
     for u in m.uploads:
-        print(f"  #{u.seq} {u.id}: {u.period.key} ({u.rows} строк, {u.status}) {u.original_name}")
-    print("Покрытие: " + ", ".join(f"{s.start}..{s.end_exclusive}" for s in coverage(m)))
+        rule = f", правило {u.overlap_policy}" if u.overlap_policy else ""
+        print(f"  #{u.seq} {u.id}: {u.period.key} ({u.rows} строк, {u.status}{rule}) {u.original_name}")
+    rep = coverage_report(m)
+    print("Покрытие: " + ", ".join(f"{s.start}..{s.end_exclusive}" for s in rep.spans))
+    if rep.gaps:
+        print("Пропуски: " + ", ".join(f"{s.start}..{s.end_exclusive}" for s in rep.gaps))
+    if rep.overlaps:
+        print("Наложения: " + ", ".join(f"{s.start}..{s.end_exclusive}" for s in rep.overlaps))
     try:
         print(f"Отчётный период по умолчанию: {default_report_period(m).key}")
         lf = history_view(m, lower=a.lower, upper_exclusive=a.upper)

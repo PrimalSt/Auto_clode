@@ -50,6 +50,16 @@ jobs:
         run: uv run agen modules
       - name: agen run на примерах
         run: uv run agen run examples/sales/scenario.yaml --output-dir out
+      - name: Папка данных — источники, загрузки, история, отчёт
+        shell: bash
+        env:
+          AGEN_HOME: ${{ runner.temp }}/agen-home
+        run: |
+          uv run agen source import examples/sales/sources.yaml
+          uv run agen upload add sales_crm examples/sales/data/sales/*.csv
+          uv run agen upload add sales_plan examples/sales/data/plan/*.xlsx
+          uv run agen history sales_crm
+          uv run agen run examples/sales/scenario.yaml --output-dir out-home
       - uses: actions/upload-artifact@v4
         with:
           name: report-${{ matrix.os }}

@@ -79,3 +79,14 @@ def test_infer_tolerates_two_percent_noise():
     assert infer_dtype(pl.Series(values))[0] == DType.INT
     values = [str(i) for i in range(90)] + ["н/д"] * 10
     assert infer_dtype(pl.Series(values))[0] == DType.STRING
+
+
+def test_t_f_flags_are_bool():
+    assert infer_dtype(pl.Series(["T", "F", None, "T"]))[0] == DType.BOOL
+    assert cast(["T", "f", "x"], DType.BOOL) == [True, False, None]
+
+
+def test_long_integers_are_codes():
+    # Номера счетов: 10–12 цифр, а дальше в файле бывают и буквы («12345A678901»).
+    assert infer_dtype(pl.Series(["123456789012", "987654321098", "5550001234"]))[0] == DType.STRING
+    assert infer_dtype(pl.Series(["123456789012", "15"]))[0] == DType.INT

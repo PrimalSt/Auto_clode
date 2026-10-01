@@ -12,6 +12,7 @@ dependencies = [
     "autogenerator-ingest",
     "autogenerator-schema",
     "autogenerator-history",
+    "autogenerator-storage",
     "autogenerator-steps-std",
     "autogenerator-engine",
     "autogenerator-theme",
@@ -42,6 +43,7 @@ autogenerator-readers-std = { workspace = true }
 autogenerator-ingest = { workspace = true }
 autogenerator-schema = { workspace = true }
 autogenerator-history = { workspace = true }
+autogenerator-storage = { workspace = true }
 autogenerator-steps-std = { workspace = true }
 autogenerator-engine = { workspace = true }
 autogenerator-theme = { workspace = true }
@@ -90,6 +92,7 @@ mypy_path = [
     "packages/ingest/src",
     "packages/schema/src",
     "packages/history/src",
+    "packages/storage/src",
     "packages/steps-std/src",
     "packages/engine/src",
     "packages/theme/src",
@@ -98,6 +101,7 @@ mypy_path = [
     "packages/worker/src",
     "packages/api/src",
     "packages/cli/src",
+    "tools",
 ]
 
 [[tool.mypy.overrides]]
@@ -110,6 +114,7 @@ ignore_missing_imports = true
 [tool.importlinter]
 root_packages = [
     "autogenerator.contracts",
+    "autogenerator.storage",
     "autogenerator.plugin_host",
     "autogenerator.readers_std",
     "autogenerator.ingest",
@@ -203,10 +208,49 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "Правило 8: модули обработки и исполнитель не открывают хранилище метаданных"
+type = "forbidden"
+source_modules = [
+    "autogenerator.ingest",
+    "autogenerator.schema",
+    "autogenerator.history",
+    "autogenerator.engine",
+    "autogenerator.theme",
+    "autogenerator.render",
+    "autogenerator.worker",
+    "autogenerator.plugin_host",
+    "autogenerator.readers_std",
+    "autogenerator.steps_std",
+    "autogenerator.blocks_std",
+]
+forbidden_modules = ["autogenerator.storage"]
+
+[[tool.importlinter.contracts]]
+name = "Хранилища зависят только от контрактов"
+type = "forbidden"
+source_modules = ["autogenerator.storage"]
+forbidden_modules = [
+    "autogenerator.plugin_host",
+    "autogenerator.readers_std",
+    "autogenerator.ingest",
+    "autogenerator.schema",
+    "autogenerator.history",
+    "autogenerator.steps_std",
+    "autogenerator.engine",
+    "autogenerator.theme",
+    "autogenerator.blocks_std",
+    "autogenerator.render",
+    "autogenerator.worker",
+    "autogenerator.api",
+    "autogenerator.cli",
+]
+
+[[tool.importlinter.contracts]]
 name = "Контракты ни от кого не зависят"
 type = "forbidden"
 source_modules = ["autogenerator.contracts"]
 forbidden_modules = [
+    "autogenerator.storage",
     "autogenerator.plugin_host",
     "autogenerator.readers_std",
     "autogenerator.ingest",

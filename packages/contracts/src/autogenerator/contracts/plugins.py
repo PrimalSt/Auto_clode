@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -29,7 +29,7 @@ from .theme import Geometry
 if TYPE_CHECKING:
     import polars as pl
 
-PLUGIN_API_VERSION = "0.1"
+PLUGIN_API_VERSION = "0.2"
 
 
 class PluginKind(StrEnum):
@@ -93,12 +93,38 @@ class ParamsPlugin(Plugin):
 # --- Читатели файлов --------------------------------------------------------------
 
 
+@dataclass
+class ReadProgress:
+    """Ход чтения файла: этап, сколько сделано и сколько всего (``None`` — неизвестно)."""
+
+    stage: str
+    done: int = 0
+    total: int | None = None
+    unit: str = "bytes"
+
+
+ProgressCallback = Callable[[ReadProgress], None]
+
+
+@dataclass
+class SampleTable:
+    """Выборка строк файла для вывода типов и профиля: начало, середина и конец."""
+
+    table: pa.Table
+    parts: list[str] = field(default_factory=list)
+    rows_estimate: int | None = None
+    notes: list[str] = field(default_factory=list)
+
+
 class ReaderPlugin(Plugin):
     """Читатель формата файла. Все столбцы отдаются текстом: типы выводит и приводит
     ``ingest``, одинаково для всех форматов."""
 
     kind = PluginKind.READER
     formats: ClassVar[tuple[str, ...]] = ()
+    sample_reads_all: ClassVar[bool] = False
+    """Выборка читает файл целиком (так у Excel). Тогда при загрузке снимок строится по шапке
+    (``columns``), а не по выборке, чтобы не читать файл дважды."""
 
     @abstractmethod
     def can_read(self, path: Path) -> bool:
@@ -106,12 +132,40 @@ class ReaderPlugin(Plugin):
 
     @abstractmethod
     def sniff(self, path: Path, options: ReadOptions) -> ReadOptions:
-        """Определить недостающие параметры чтения; заданные в ``options`` не менять."""
+        """Определить недостающие параметры чтения; заданные в ``options`` не менять.
+        У Excel ``sheet`` в ответе — список листов, которые войдут в выгрузку."""
 
     @abstractmethod
-    def batches(self, path: Path, options: ReadOptions, batch_rows: int = 100_000) -> Iterator[pa.RecordBatch]:
-        """Порции строк; все столбцы — ``pa.string()``, названия — как в файле
-        (повторы названий различаются суффиксом « (2)», « (3)»)."""
+    def batches(
+        self,
+        path: Path,
+        options: ReadOptions,
+        batch_rows: int = 100_000,
+        progress: ProgressCallback | None = None,
+    ) -> Iterator[pa.RecordBatch]:
+        """Порции строк; все столбцы текстовые (``string``, ``large_string`` или ``string_view``),
+        названия — как в файле (повторы различаются суффиксом « (2)», « (3)»). ``options`` —
+        результат ``sniff``. Ошибку кодировки или формата читатель сообщает ``AgenError`` с
+        номером строки файла."""
+
+    def columns(self, path: Path, options: ReadOptions) -> list[str]:
+        """Названия столбцов в том виде, в каком их отдаст ``batches``. По умолчанию — по
+        выборке из первых строк; читатели с дорогой выборкой читают только шапку."""
+        return list(self.sample(path, options, rows=100).table.column_names)
+
+    def sample(self, path: Path, options: ReadOptions, rows: int = 10_000) -> SampleTable:
+        """Выборка для вывода типов. По умолчанию — первые ``rows`` строк; читатели, которые
+        умеют прыгать по файлу, добавляют порции из середины и конца (раздел 6.1, п. 4)."""
+        got: list[pa.RecordBatch] = []
+        n = 0
+        for b in self.batches(path, options, batch_rows=rows):
+            got.append(b.slice(0, rows - n))
+            n += got[-1].num_rows
+            if n >= rows:
+                break
+        if not got:
+            return SampleTable(pa.table({}), ["начало"])
+        return SampleTable(pa.Table.from_batches(got), ["начало"])
 
 
 # --- Шаги обработки ----------------------------------------------------------------
