@@ -89,12 +89,8 @@ class FolderLock:
         try:
             _lock(fh)
         except OSError:
-            try:
-                fh.seek(0)
-                who = fh.read(512).decode("utf-8", "replace").strip() or "другой процесс"
-            except OSError:
-                who = "другой процесс"
             fh.close()
+            who = _holder(self.path)
             raise AgenError(
                 ErrorCode.DATA_FOLDER_LOCKED,
                 f"Папка данных {self.path.parent} занята: {who}",
@@ -126,11 +122,25 @@ class FolderLock:
         self.release()
 
 
+def _holder(path: Path) -> str:
+    """Кто держит блокировку — по тексту в файле блокировки.
+
+    Читается без буфера и только начало файла: буферизованное чтение берёт 8 КБ и в Windows
+    задевает запертый байт, тогда чтение падает с ошибкой блокировки.
+    """
+    try:
+        with open(path, "rb", buffering=0) as raw:
+            text = raw.read(512)
+    except OSError:
+        text = b""
+    return text.decode("utf-8", "replace").strip() or "другой процесс"
+
+
 if sys.platform == "win32":
     import msvcrt
 
     # Запирается байт за концом текста: тогда второй процесс может прочитать, кто держит папку.
-    _LOCK_OFFSET = 4096
+    _LOCK_OFFSET = 1 << 20
 
     def _lock(fh: IO[bytes]) -> None:
         fh.seek(_LOCK_OFFSET)
