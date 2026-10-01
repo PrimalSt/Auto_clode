@@ -494,6 +494,38 @@ def test_node_cache_skips_reading_history_again(registry, hist, tmp_path):
     assert third.metrics["rev"] == 360.0
 
 
+@pytest.mark.parametrize("cache", [True, False])
+def test_step_without_cache_reruns_its_input_and_dependents(registry, hist, tmp_path, cache):
+    counter = tmp_path / "runs.txt"
+    code = (
+        "from pathlib import Path\n"
+        f"P = Path({str(counter)!r})\n"
+        "def transform(df, ctx):\n"
+        "    n = int(P.read_text()) + 1 if P.exists() else 1\n"
+        "    P.write_text(str(n))\n"
+        "    df['runs'] = n\n"
+        "    return df\n"
+    )
+    spec = sc(
+        inputs=[
+            {"id": "sales", "source": "s", "pipeline": [{"id": "py", "type": "python", "code": code, "cache": cache}]},
+            {"id": "plan", "source": "p"},
+        ],
+        datasets=[{"id": "d", "input": "sales", "aggregate": [{"fn": "last", "column": "runs", "as": "runs"}]}],
+        metrics=[{"id": "runs", "input": "sales", "fn": "last", "column": "runs"}],
+    )
+    node_cache = NodeCache(tmp_path / "cache")
+    first = go(spec, registry, hist, tmp_path / "w1", cache=node_cache)
+    second = go(spec, registry, hist, tmp_path / "w2", cache=node_cache)
+    assert first.metrics["runs"] == 1
+    # С кэшем код второй раз не запускается; без кэша — запускается, и набор с показателем
+    # тоже пересчитываются.
+    expected = 1 if cache else 2
+    assert int(counter.read_text()) == expected
+    assert second.metrics["runs"] == expected
+    assert second.datasets["d"].to_pylist() == [{"runs": expected}]
+
+
 # --- превью -------------------------------------------------------------------------
 
 

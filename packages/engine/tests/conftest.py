@@ -213,6 +213,7 @@ class CodeParams(BaseModel):
     mode: str = "table"
     frame: str = "pandas"
     timeout: float | None = None
+    cache: bool = True
 
 
 class Code(StepPlugin):
@@ -228,6 +229,9 @@ class Code(StepPlugin):
 
     def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
         return None
+
+    def cacheable(self, params: Any) -> bool:
+        return bool(params.cache)
 
     def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
         return ctx.run_code(lf, params.code, mode=params.mode, frame=params.frame, timeout=params.timeout)

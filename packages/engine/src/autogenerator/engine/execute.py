@@ -291,6 +291,10 @@ class _Engine:
         fp = self.fingerprint(iid)
         if fp is None or self.opts.cache is None:
             return None
+        # Шаг, которому нельзя брать результат из кэша (код читает внешние файлы), выключает
+        # кэш для всего входа и для всего, что от него зависит: у них ключа тоже не будет.
+        if any(not sp.cacheable for sp in ip.steps):
+            return None
         deps = [self.node_keys.get(f"input:{d}") for d in ip.deps]
         if any(d is None for d in deps):
             return None
@@ -588,7 +592,14 @@ class _Engine:
         deps = [self.node_keys.get(d) for d in dp.deps]
         if any(d is None for d in deps):
             return None
-        return make_key("dataset", dp.spec.model_dump(mode="json"), deps, self.period.key, self.anchor)
+        return make_key(
+            "dataset",
+            dp.spec.model_dump(mode="json"),
+            deps,
+            self.period.key,
+            self.anchor,
+            self.plugin_versions(dp.window, [a.fn for a, _ in dp.aggregates]),
+        )
 
     def run_dataset(self, dp: DatasetPlan) -> None:
         ds = dp.spec
@@ -773,7 +784,20 @@ class _Engine:
         deps = [self.node_keys.get(d) for d in mp.deps]
         if any(d is None for d in deps):
             return None
-        return make_key("metric", mp.spec.model_dump(mode="json"), deps, period.key, self.anchor)
+        fns = [mp.spec.fn] if mp.spec.fn else []
+        return make_key(
+            "metric",
+            mp.spec.model_dump(mode="json"),
+            deps,
+            period.key,
+            self.anchor,
+            self.plugin_versions(mp.window, fns),
+        )
+
+    def plugin_versions(self, wp: WindowPlan | None, aggregations: list[str]) -> list[str]:
+        """Версии плагинов окна и агрегатов узла: обновлённый плагин даёт новый ключ кэша."""
+        out = [f"window:{wp.spec.type}={self.registry.version(PluginKind.WINDOW, wp.spec.type)}"] if wp else []
+        return out + [f"agg:{fn}={self.registry.version(PluginKind.AGGREGATION, fn)}" for fn in aggregations]
 
     def run_metric(self, mp: MetricPlan) -> None:
         m = mp.spec
