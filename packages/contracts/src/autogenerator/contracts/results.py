@@ -91,6 +91,7 @@ class RunResult(BaseModel):
     nodes: list[NodeStatus] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict, description="Загрузки по входам")
+    from_home: list[str] = Field(default_factory=list, description="Входы, чья история взята из папки данных")
     seconds: float = 0.0
 
     @property

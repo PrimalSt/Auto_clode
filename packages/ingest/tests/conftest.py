@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from autogenerator.contracts import ReaderPlugin, ReadOptions
+from autogenerator.contracts import ProgressCallback, ReaderPlugin, ReadOptions, ReadProgress
 from autogenerator.plugin_host import PluginRegistry
 
 
@@ -24,10 +24,18 @@ class JsonLinesReader(ReaderPlugin):
     def sniff(self, path: Path, options: ReadOptions) -> ReadOptions:
         return options
 
-    def batches(self, path: Path, options: ReadOptions, batch_rows: int = 100_000) -> Iterator[pa.RecordBatch]:
+    def batches(
+        self,
+        path: Path,
+        options: ReadOptions,
+        batch_rows: int = 100_000,
+        progress: ProgressCallback | None = None,
+    ) -> Iterator[pa.RecordBatch]:
         lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
         names, rows = lines[0], lines[1:]
         for i in range(0, len(rows), batch_rows):
+            if progress is not None:
+                progress(ReadProgress("чтение", i, len(rows), "lines"))
             chunk = rows[i : i + batch_rows]
             cols = [pa.array([r[j] for r in chunk], pa.string()) for j in range(len(names))]
             yield pa.RecordBatch.from_arrays(cols, names=names)

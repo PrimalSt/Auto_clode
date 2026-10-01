@@ -35,14 +35,27 @@ class OverlapPolicy(StrEnum):
 
 
 class ReadOptions(BaseModel):
-    """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же."""
+    """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же.
+
+    Пустое поле — «определить по файлу»: читатель заполняет его сам (``sniff``).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     encoding: str | None = Field(None, description="utf-8, utf-8-sig или cp1251; пусто — определить")
     delimiter: str | None = Field(None, description="Разделитель CSV; пусто — определить")
-    header_row: int = Field(1, ge=1, description="Номер строки заголовков, с единицы")
-    sheet: str | int | None = Field(None, description="Лист Excel: имя или номер с нуля")
+    quote: str | None = Field('"', description="Кавычки CSV; пусто — в файле нет кавычек")
+    header_row: int | None = Field(
+        None,
+        ge=1,
+        description="Номер строки заголовков, с единицы; пусто — определить (первая строка, где "
+        "большинство ячеек заполнено текстом)",
+    )
+    sheet: str | int | list[str | int] | None = Field(
+        None,
+        description="Лист Excel: имя, номер с нуля или список листов одной выгрузки; пусто — первый лист и все "
+        "следующие листы с такой же шапкой (выгрузки больше 1 048 576 строк Excel разбивает на листы)",
+    )
 
     def merged(self, other: ReadOptions | None) -> ReadOptions:
         """Заполнить пустые поля значениями из ``other`` (обычно — из автоопределения)."""
@@ -51,6 +64,13 @@ class ReadOptions(BaseModel):
         data = other.model_dump()
         data.update({k: v for k, v in self.model_dump(exclude_unset=True).items() if v is not None})
         return ReadOptions(**data)
+
+    @property
+    def sheets(self) -> list[str | int] | None:
+        """Листы списком; ``None`` — определить."""
+        if self.sheet is None:
+            return None
+        return list(self.sheet) if isinstance(self.sheet, list) else [self.sheet]
 
 
 class ColumnSpec(BaseModel):
@@ -62,6 +82,9 @@ class ColumnSpec(BaseModel):
     id: str
     name: str
     dtype: DType = DType.STRING
+    format: str | None = Field(
+        None, description="Формат даты или даты и времени в файле, например %d.%m.%Y; пусто — определить"
+    )
     aliases: list[str] = Field(default_factory=list)
 
     @field_validator("id")
@@ -86,6 +109,9 @@ class SourceSpec(BaseModel):
     period_type: PeriodUnit = PeriodUnit.MONTH
     overlap_policy: OverlapPolicy = OverlapPolicy.REPLACE_PERIOD
     keys: list[str] = Field(default_factory=list)
+    keep_originals: bool = Field(
+        False, description="Хранить исходные файлы всех загрузок; по умолчанию — только до следующей загрузки"
+    )
     columns: list[ColumnSpec]
 
     @field_validator("id")

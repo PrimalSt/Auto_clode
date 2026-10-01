@@ -6,8 +6,10 @@
     result = run("examples/sales/scenario.yaml", period="2026-03", output="отчёт.pptx")
     print(result.output_path, result.warnings)
 
-Пути к выгрузкам можно передать явно (``inputs={"sales": ["jan.csv", "feb.csv"]}``) или
-положить в папку данных: по подпапке на вход, файлы загружаются в порядке имён.
+История входа берётся из папки данных приложения (``agen upload``), если там есть его
+источник. Иначе — из файлов: явно (``inputs={"sales": ["jan.csv", "feb.csv"]}``) или из
+папки выгрузок ``data`` рядом со сценарием, по подпапке на вход, в порядке имён. Явно
+переданные файлы и папка выгрузок важнее папки данных.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from autogenerator import worker
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
+    HistoryManifest,
     Issue,
     Period,
     PluginManifest,
@@ -65,8 +68,10 @@ def _resolve(
     else:
         sc, base = load_scenario(scenario), Path(scenario).resolve().parent
     if sources is None:
-        sources = base / "sources.yaml"
-    srcs = load_sources(sources) if isinstance(sources, str | Path) else list(sources)
+        default = base / "sources.yaml"
+        srcs = load_sources(default) if default.exists() else []
+    else:
+        srcs = load_sources(sources) if isinstance(sources, str | Path) else list(sources)
     theme_path = Path(theme) if theme else (base / sc.theme if sc.theme else None)
     if theme_path is None or not theme_path.exists():
         raise AgenError(
@@ -100,22 +105,32 @@ def run(
     output_dir: str | Path | None = None,
     workdir: str | Path | None = None,
     accept_cast_errors: bool = False,
+    home: str | Path | None = None,
+    use_home: bool | None = None,
 ) -> RunResult:
     """Собрать отчёт.
 
-    ``inputs`` дополняют и переопределяют файлы из ``data_dir`` (по умолчанию — папка
-    ``data`` рядом со сценарием). ``period`` — «2026-03», «2026-Q1» и т. п.; по умолчанию —
-    последний период основного входа.
+    Вход берёт историю из папки данных (``home``, по умолчанию — папка приложения), если
+    там есть его источник и для него не переданы файлы. ``inputs`` дополняют и
+    переопределяют файлы из ``data_dir`` (по умолчанию — папка ``data`` рядом со
+    сценарием). ``use_home=False`` — только файлы; ``True`` — только папка данных.
+    ``period`` — «2026-03», «2026-Q1» и т. п.; по умолчанию — последний период основного
+    входа.
     """
     sc, srcs, theme_path, base = _resolve(scenario, sources, theme)
-    files = find_inputs(sc, data_dir if data_dir is not None else base / "data")
+    files = {} if use_home else find_inputs(sc, data_dir if data_dir is not None else base / "data")
     for k, v in (inputs or {}).items():
         files[k] = [str(p) for p in v]
+    histories, home_specs = ({}, []) if use_home is False else _home_histories(sc, files, home, use_home is True)
+    by_id = {s.id: s for s in srcs}
+    for spec in home_specs:
+        by_id[spec.id] = spec
     p = Period.parse(period) if isinstance(period, str) else period
     req = RunRequest(
         scenario=sc,
-        sources=srcs,
+        sources=list(by_id.values()),
         inputs=files,
+        histories=histories,
         theme=theme_path,
         period=p,
         output=str(output) if output else None,
@@ -126,9 +141,36 @@ def run(
     return worker.run(req)
 
 
-def inspect(path: str | Path, options: ReadOptions | None = None, fmt: str | None = None) -> SchemaSnapshot:
-    """Структура файла выгрузки: столбцы, выведенные типы, примеры значений."""
-    return worker.inspect(path, options, fmt)
+def _home_histories(
+    sc: ScenarioSpec, files: dict[str, list[str]], home: str | Path | None, required: bool
+) -> tuple[dict[str, HistoryManifest], list[SourceSpec]]:
+    """Истории входов из папки данных: для входов без файлов, чей источник там есть."""
+    from .home import Home
+
+    try:
+        h = Home.open(home, create=False)
+    except AgenError:
+        if required:
+            raise
+        return {}, []
+    histories: dict[str, HistoryManifest] = {}
+    specs: list[SourceSpec] = []
+    with h:
+        for inp in sc.inputs:
+            if files.get(inp.id) or not h.has_source(inp.source):
+                if required and not files.get(inp.id):
+                    h.source(inp.source)  # сообщит, каких источников нет
+                continue
+            histories[inp.id] = h.history(inp.source)
+            specs.append(h.source(inp.source).spec)
+    return histories, specs
+
+
+def inspect(
+    path: str | Path, options: ReadOptions | None = None, fmt: str | None = None, profile: bool = True
+) -> SchemaSnapshot:
+    """Структура файла выгрузки: параметры чтения, столбцы, выведенные типы, профиль по выборке."""
+    return worker.inspect(path, options, fmt, profile)
 
 
 def modules(isolated: bool = True) -> PluginManifest:

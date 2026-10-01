@@ -2,8 +2,9 @@
 (ARCHITECTURE.md, раздел 4.2, правило 1).
 
 Порядок: разбор сценария (engine) → импорт шаблона (theme) и проверка слайдов (render) →
-для каждого файла: снимок структуры (ingest), сверка (schema), запись загрузки (ingest),
-период загрузки (history) → отчётный период → расчёты (engine) → сборка (render).
+история каждого входа: из папки данных (манифест приходит в задании) или из переданных
+файлов (задание ``ingest`` для каждого, во временную историю) → отчётный период →
+расчёты (engine) → сборка (render).
 
 Модули не знают друг о друге: они обмениваются моделями из ``contracts``, а связывает их
 этот файл. Модули и плагины импортируются лениво, внутри функций, — как в исполнителе,
@@ -26,13 +27,13 @@ from autogenerator.contracts import (
     DType,
     ErrorCode,
     HistoryManifest,
+    IngestRequest,
     Issue,
     IssueLevel,
     Period,
     RunRequest,
     RunResult,
     ScenarioSpec,
-    SchemaSnapshot,
     SourceSpec,
     UploadRef,
     UploadStatus,
@@ -132,84 +133,10 @@ def _ingest_input(
     accept_cast_errors: bool,
     issues: list[Issue],
 ) -> tuple[HistoryManifest, list[dict[str, Any]]]:
-    from autogenerator.history import upload_period
-    from autogenerator.ingest import inspect_file, write_upload
-    from autogenerator.schema import reconcile
+    """Файлы входа — во временную историю в рабочей папке, по порядку загрузки."""
+    from .ingest_job import ingest_upload
 
     node = f"input:{input_id}"
-    uploads: list[UploadRef] = []
-    log: list[dict[str, Any]] = []
-    for seq, f in enumerate(files, start=1):
-        path = Path(f)
-        snap: SchemaSnapshot = inspect_file(path, registry, source.options, fmt=source.format)
-        rec = reconcile(source, snap, required)
-        if rec.status == "blocked":
-            raise AgenError(
-                ErrorCode.SCHEMA_BLOCKED,
-                f"Файл {path.name} не подходит к источнику «{source.name}»:\n  " + "\n  ".join(rec.messages),
-                details=rec.model_dump(),
-            )
-        for msg in rec.messages:
-            issues.append(Issue(level=IssueLevel.INFO, node=node, message=f"{path.name}: {msg}"))
-        upload_id = f"{input_id}-{seq:03d}"
-        res = write_upload(
-            path,
-            registry,
-            source=source,
-            mapping=rec.mapping,
-            upload_id=upload_id,
-            upload_seq=seq,
-            out_dir=workdir / "uploads" / input_id / f"{seq:03d}",
-            options=snap.options,
-            required=required,
-        )
-        _dump(workdir / "uploads" / input_id / f"{seq:03d}.json", res)
-        if res.status == UploadStatus.NEEDS_REVIEW:
-            text = f"{path.name}: " + "; ".join(res.review_reasons)
-            if not accept_cast_errors:
-                raise AgenError(
-                    ErrorCode.CAST_REVIEW,
-                    f"Загрузка требует проверки — {text}",
-                    hint="Исправьте файл или запустите с --accept-cast-errors, чтобы принять такие строки "
-                    "(нераспознанные значения станут пустыми).",
-                )
-            issues.append(Issue(level=IssueLevel.WARNING, node=node, message=f"принято с ошибками: {text}"))
-        else:
-            for ci in res.cast_issues:
-                issues.append(
-                    Issue(
-                        level=IssueLevel.WARNING,
-                        node=node,
-                        message=f"{path.name}: в столбце «{ci.column}» не распознано {ci.errors} значений "
-                        f"(например, {', '.join(ci.examples[:3])}); они пустые",
-                    )
-                )
-        if res.null_period_rows:
-            issues.append(
-                Issue(
-                    level=IssueLevel.WARNING,
-                    node=node,
-                    message=f"{path.name}: {res.null_period_rows} строк без даты в «{source.period_column}»; "
-                    "они не попадут ни в одно окно",
-                )
-            )
-        if res.period_min is None or res.period_max is None:
-            raise AgenError(
-                ErrorCode.HISTORY_EMPTY,
-                f"В файле {path.name} нет ни одной даты в «{source.period_column}»",
-            )
-        period = upload_period(res.period_min, res.period_max, source.period_type)
-        uploads.append(
-            UploadRef(
-                id=upload_id,
-                seq=seq,
-                uri=res.data_uri,
-                period=period,
-                rows=res.rows,
-                original_name=path.name,
-            )
-        )
-        log.append({"file": str(path), "upload": upload_id, "rows": res.rows, "period": period.key})
     manifest = HistoryManifest(
         source_id=source.id,
         source_version=source.version,
@@ -218,8 +145,55 @@ def _ingest_input(
         overlap_policy=source.overlap_policy,
         keys=source.keys,
         columns=source.dtypes,
-        uploads=uploads,
     )
+    log: list[dict[str, Any]] = []
+    for seq, f in enumerate(files, start=1):
+        path = Path(f)
+        upload_id = f"{input_id}-{seq:03d}"
+        res = ingest_upload(
+            IngestRequest(
+                source=source,
+                path=str(path),
+                upload_id=upload_id,
+                upload_seq=seq,
+                out_dir=str(workdir / "uploads" / input_id / f"{seq:03d}"),
+                required=sorted(required),
+                history=manifest,
+                profile=False,
+            ),
+            registry,
+        )
+        _dump(workdir / "uploads" / input_id / f"{seq:03d}.json", res)
+        issues += [i.model_copy(update={"node": node}) for i in res.issues if i.level != IssueLevel.ERROR]
+        up = res.upload
+        if up.status == UploadStatus.NEEDS_REVIEW:
+            text = f"{path.name}: " + "; ".join(up.review_reasons)
+            if not accept_cast_errors:
+                raise AgenError(
+                    ErrorCode.CAST_REVIEW,
+                    f"Загрузка требует проверки — {text}",
+                    hint="Исправьте файл или запустите с --accept-cast-errors, чтобы принять такие строки "
+                    "(нераспознанные значения станут пустыми).",
+                )
+            issues.append(Issue(level=IssueLevel.WARNING, node=node, message=f"принято с ошибками: {text}"))
+        if res.needs_overlap_choice:
+            raise AgenError(
+                ErrorCode.OVERLAP_CHOICE,
+                f"{path.name}: период {res.period.key} пересекается с более ранними файлами входа «{input_id}», "
+                "а у источника правило пересечения «ask»",
+                hint="Для запуска из файлов задайте источнику правило пересечения (overlap_policy) явно.",
+            )
+        manifest.uploads.append(
+            UploadRef(
+                id=upload_id,
+                seq=seq,
+                uri=up.data_uri,
+                period=res.period,
+                rows=up.rows,
+                original_name=path.name,
+            )
+        )
+        log.append({"file": str(path), "upload": upload_id, "rows": up.rows, "period": res.period.key})
     _dump(workdir / "manifests" / f"{input_id}.json", manifest)
     return manifest, log
 
@@ -275,6 +249,17 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
 
     manifests: dict[str, HistoryManifest] = {}
     for inp in scenario.inputs:
+        if inp.id in req.histories:
+            # История из папки данных: файлы уже загружены, читаются только нужные месяцы.
+            m = req.histories[inp.id]
+            manifests[inp.id] = m
+            result.from_home.append(inp.id)
+            _dump(workdir / "manifests" / f"{inp.id}.json", m)
+            result.inputs[inp.id] = [
+                {"file": u.original_name, "upload": u.id, "rows": u.rows, "period": u.period.key}
+                for u in m.active_uploads
+            ]
+            continue
         files = req.inputs.get(inp.id) or []
         if not files:
             raise AgenError(

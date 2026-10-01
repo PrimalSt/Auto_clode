@@ -4,8 +4,8 @@
 """
 
 from .errors import AgenError, ErrorCode
-from .history import HistoryManifest, HistoryProvider, UploadRef
-from .jobs import RunRequest
+from .history import CoverageCell, CoverageReport, CoverageState, HistoryManifest, HistoryProvider, UploadRef
+from .jobs import IngestRequest, IngestResult, RunRequest
 from .periods import DateSpan, Period, PeriodUnit
 from .plugins import (
     ENTRY_POINT_GROUPS,
@@ -24,7 +24,10 @@ from .plugins import (
     PluginKind,
     PluginManifest,
     PluginStatus,
+    ProgressCallback,
     ReaderPlugin,
+    ReadProgress,
+    SampleTable,
     StepContext,
     StepPlugin,
     WindowPlugin,
@@ -55,14 +58,24 @@ from .scenario import (
 )
 from .snapshot import (
     CastIssue,
+    ColumnProfile,
     ColumnSnapshot,
     ReconcileResult,
     ReconcileStatus,
     SchemaSnapshot,
     UploadResult,
     UploadStatus,
+    ValueCount,
 )
 from .sources import ColumnSpec, DType, OverlapPolicy, ReadOptions, SourceSpec
+from .storage import (
+    DEFAULT_WORKSPACE,
+    BlobStore,
+    MetadataStore,
+    SourceRecord,
+    SourceVersionRecord,
+    UploadRecord,
+)
 from .theme import (
     Geometry,
     LayoutInfo,
@@ -75,20 +88,26 @@ from .theme import (
 )
 
 __all__ = [
+    "DEFAULT_WORKSPACE",
     "ENTRY_POINT_GROUPS",
     "PLUGIN_API_VERSION",
     "SPEC_VERSION",
     "AgenError",
     "AggregateSpec",
     "AggregationPlugin",
+    "BlobStore",
     "BlockContext",
     "BlockData",
     "BlockPlugin",
     "BlockSpec",
     "BlockTarget",
     "CastIssue",
+    "ColumnProfile",
     "ColumnSnapshot",
     "ColumnSpec",
+    "CoverageCell",
+    "CoverageReport",
+    "CoverageState",
     "DType",
     "DataNeeds",
     "DatasetSpec",
@@ -100,11 +119,14 @@ __all__ = [
     "GroupBySpec",
     "HistoryManifest",
     "HistoryProvider",
+    "IngestRequest",
+    "IngestResult",
     "InputSpec",
     "Issue",
     "IssueLevel",
     "LayoutInfo",
     "LayoutRole",
+    "MetadataStore",
     "MetricSpec",
     "NoParams",
     "NodeKind",
@@ -120,7 +142,9 @@ __all__ = [
     "PluginKind",
     "PluginManifest",
     "PluginStatus",
+    "ProgressCallback",
     "ReadOptions",
+    "ReadProgress",
     "ReaderPlugin",
     "ReconcileResult",
     "ReconcileStatus",
@@ -128,20 +152,25 @@ __all__ = [
     "RoleBinding",
     "RunRequest",
     "RunResult",
+    "SampleTable",
     "ScenarioSpec",
     "SchemaSnapshot",
     "SlideSpec",
     "SlotInfo",
     "SortSpec",
+    "SourceRecord",
     "SourceSpec",
+    "SourceVersionRecord",
     "StepContext",
     "StepPlugin",
     "StepSpec",
     "TemplateSlideInfo",
     "ThemeManifest",
+    "UploadRecord",
     "UploadRef",
     "UploadResult",
     "UploadStatus",
+    "ValueCount",
     "WindowPlugin",
     "WindowSpec",
 ]

@@ -6,6 +6,7 @@ import pytest
 
 from autogenerator.contracts import (
     AgenError,
+    CoverageState,
     DateSpan,
     HistoryManifest,
     OverlapPolicy,
@@ -14,7 +15,16 @@ from autogenerator.contracts import (
     UploadRef,
     UploadStatus,
 )
-from autogenerator.history import coverage, default_report_period, history_view, upload_period
+from autogenerator.history import (
+    coverage,
+    coverage_report,
+    default_report_period,
+    guess_period_type,
+    history_view,
+    overlapping_uploads,
+    rows_outside,
+    upload_period,
+)
 
 
 def make_upload(root: Path, seq: int, rows: list[tuple[str, date | None, float]], period: str) -> UploadRef:
@@ -85,9 +95,26 @@ def test_append_and_replace_all(uploads):
     assert keys(manifest(OverlapPolicy.REPLACE_ALL, uploads)) == [("a", 10)]
 
 
-def test_ask_needs_ui(uploads):
-    with pytest.raises(AgenError, match="ask"):
+def test_ask_without_choice_is_an_error(uploads):
+    with pytest.raises(AgenError, match="не выбрано"):
         history_view(manifest(OverlapPolicy.ASK, uploads))
+
+
+def test_ask_uses_choice_of_each_upload(uploads):
+    _jan, feb, jan_fix = uploads
+    # Исправленный январь выбран «добавить»: оба января в истории.
+    jan_fix.overlap_policy = OverlapPolicy.APPEND
+    assert len(keys(manifest(OverlapPolicy.ASK, uploads))) == 5
+    # «Заменить период»: как правило replace_period.
+    jan_fix.overlap_policy = OverlapPolicy.REPLACE_PERIOD
+    assert keys(manifest(OverlapPolicy.ASK, uploads)) == [("x", 9), ("c", 3), ("a", 10)]
+    # «Объединить по ключам»: из ранних загрузок уходят только строки с теми же ключами.
+    jan_fix.overlap_policy = OverlapPolicy.MERGE_DEDUPE
+    assert keys(manifest(OverlapPolicy.ASK, uploads, keys=["key"])) == [("b", 2), ("x", 9), ("c", 3), ("a", 10)]
+    # «Заменить всё»: в истории только эта загрузка и следующие.
+    feb.overlap_policy = OverlapPolicy.REPLACE_ALL
+    jan_fix.overlap_policy = OverlapPolicy.APPEND
+    assert keys(manifest(OverlapPolicy.ASK, uploads)) == [("c", 3), ("a", 10)]
 
 
 def test_excluded_uploads_are_skipped(uploads):
@@ -146,3 +173,48 @@ def test_coverage_merges_adjacent(tmp_path: Path, uploads):
         DateSpan(start=date(2026, 1, 1), end_exclusive=date(2026, 3, 1)),
         DateSpan(start=date(2026, 4, 1), end_exclusive=date(2026, 5, 1)),
     ]
+
+
+def test_coverage_report_gaps_and_overlaps(tmp_path: Path, uploads):
+    apr = make_upload(tmp_path, 4, [("d", date(2026, 4, 1), 4)], "2026-04")
+    rep = coverage_report(manifest(OverlapPolicy.REPLACE_PERIOD, [*uploads, apr]))
+    assert rep.unit == PeriodUnit.MONTH
+    assert [(c.period.key, c.state, c.uploads) for c in rep.cells] == [
+        ("2026-01", CoverageState.OVERLAP, ["u1", "u3"]),
+        ("2026-02", CoverageState.COVERED, ["u2"]),
+        ("2026-03", CoverageState.GAP, []),
+        ("2026-04", CoverageState.COVERED, ["u4"]),
+    ]
+    assert rep.gaps == [DateSpan(start=date(2026, 3, 1), end_exclusive=date(2026, 4, 1))]
+    assert rep.overlaps == [DateSpan(start=date(2026, 1, 1), end_exclusive=date(2026, 2, 1))]
+
+
+def test_coverage_report_coarsens_long_scales(tmp_path: Path):
+    up = make_upload(tmp_path, 1, [("a", date(2020, 1, 5), 1)], "2020-01-01..2026-12-31")
+    m = manifest(OverlapPolicy.APPEND, [up])
+    m.period_type = PeriodUnit.DAY
+    rep = coverage_report(m, max_cells=50)
+    assert rep.unit == PeriodUnit.QUARTER
+    assert len(rep.cells) == 28
+
+
+def test_overlapping_uploads(uploads):
+    m = manifest(OverlapPolicy.REPLACE_PERIOD, uploads)
+    assert [u.id for u in overlapping_uploads(m, Period.parse("2026-01"))] == ["u1", "u3"]
+    assert overlapping_uploads(m, Period.parse("2026-03")) == []
+    assert [u.id for u in overlapping_uploads(m, Period.parse("2026-01-31..2026-02-01"))] == ["u1", "u2", "u3"]
+
+
+def test_guess_period_type():
+    assert guess_period_type(date(2026, 3, 1), date(2026, 3, 31)) == PeriodUnit.MONTH
+    assert guess_period_type(date(2026, 3, 5), date(2026, 3, 5)) == PeriodUnit.DAY
+    assert guess_period_type(date(2026, 1, 1), date(2026, 3, 1)) == PeriodUnit.QUARTER
+    assert guess_period_type(date(2026, 1, 1), date(2026, 12, 1)) == PeriodUnit.YEAR
+    assert guess_period_type(date(2026, 3, 3), date(2026, 4, 19)) == PeriodUnit.RANGE
+
+
+def test_rows_outside(uploads):
+    jan = uploads[0]
+    assert rows_outside(jan.uri, "date", "date", Period.parse("2026-01")) == 0
+    # Строка без даты не считается «вне периода»: о ней отдельное предупреждение.
+    assert rows_outside(jan.uri, "date", "date", Period.parse("2026-01-01..2026-01-10")) == 1

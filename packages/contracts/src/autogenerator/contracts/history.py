@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,11 @@ class UploadRef(BaseModel):
     rows: int = 0
     status: UploadStatus = UploadStatus.ACTIVE
     original_name: str = ""
+    overlap_policy: OverlapPolicy | None = Field(
+        None,
+        description="Правило пересечения, выбранное для этой загрузки, когда у источника правило «ask»",
+    )
+    uploaded_at: datetime | None = None
 
 
 class HistoryManifest(BaseModel):
@@ -43,6 +49,37 @@ class HistoryManifest(BaseModel):
     @property
     def active_uploads(self) -> list[UploadRef]:
         return sorted((u for u in self.uploads if u.status == UploadStatus.ACTIVE), key=lambda u: u.seq)
+
+    def policy_of(self, upload: UploadRef) -> OverlapPolicy:
+        """Правило, по которому загрузка ложится на более ранние: своё (выбранное при «ask»)
+        или правило источника."""
+        return upload.overlap_policy or self.overlap_policy
+
+
+class CoverageState(StrEnum):
+    """Состояние единицы периода на шкале покрытия."""
+
+    COVERED = "covered"
+    GAP = "gap"
+    OVERLAP = "overlap"
+
+
+class CoverageCell(BaseModel):
+    """Одна единица шкалы (месяц, неделя, день…): чьи загрузки её покрывают."""
+
+    period: Period
+    uploads: list[str] = Field(default_factory=list, description="id активных загрузок, покрывающих единицу")
+    state: CoverageState
+
+
+class CoverageReport(BaseModel):
+    """Покрытие истории: объединённые отрезки, пропуски и наложения (экран истории, F-156)."""
+
+    spans: list[DateSpan] = Field(default_factory=list, description="Покрытые отрезки по возрастанию")
+    gaps: list[DateSpan] = Field(default_factory=list, description="Пропуски между покрытыми отрезками")
+    overlaps: list[DateSpan] = Field(default_factory=list, description="Отрезки, покрытые двумя и более загрузками")
+    unit: PeriodUnit = Field(description="Единица шкалы")
+    cells: list[CoverageCell] = Field(default_factory=list)
 
 
 class HistoryProvider(Protocol):

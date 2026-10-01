@@ -24,9 +24,18 @@ class ErrorCode(StrEnum):
     FILE_ENCODING = "file_encoding"
     SCHEMA_BLOCKED = "schema_blocked"
     CAST_REVIEW = "cast_review"
+    CANCELLED = "cancelled"
     # История и периоды
     HISTORY_EMPTY = "history_empty"
     PERIOD_INVALID = "period_invalid"
+    OVERLAP_CHOICE = "overlap_choice"
+    # Папка данных, источники и загрузки
+    DATA_FOLDER = "data_folder"
+    DATA_FOLDER_LOCKED = "data_folder_locked"
+    DISK_SPACE = "disk_space"
+    NOT_FOUND = "not_found"
+    ALREADY_EXISTS = "already_exists"
+    SOURCE_CHANGE = "source_change"
     # Вычисления
     EXPRESSION = "expression"
     NODE_FAILED = "node_failed"
