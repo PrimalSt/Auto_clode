@@ -87,6 +87,6 @@ def test_t_f_flags_are_bool():
 
 
 def test_long_integers_are_codes():
-    # Лицевые счета: 12 цифр, а дальше в файле бывают и буквы («586A05832141»).
-    assert infer_dtype(pl.Series(["461018823707", "596001469690", "3169008746"]))[0] == DType.STRING
-    assert infer_dtype(pl.Series(["461018823707", "15"]))[0] == DType.INT
+    # Номера счетов: 10–12 цифр, а дальше в файле бывают и буквы («12345A678901»).
+    assert infer_dtype(pl.Series(["123456789012", "987654321098", "5550001234"]))[0] == DType.STRING
+    assert infer_dtype(pl.Series(["123456789012", "15"]))[0] == DType.INT

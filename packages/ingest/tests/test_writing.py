@@ -231,18 +231,18 @@ def test_parts_of_one_export_become_one_upload(tmp_path: Path, registry, jsonl):
 
 def test_fixed_period_for_snapshot_exports(tmp_path: Path, registry, jsonl):
     source = SourceSpec(
-        id="accounts",
-        name="Учётные записи",
+        id="clients",
+        name="Клиенты",
         period_column="period",
         period_from="upload",
-        columns=[{"id": "period", "name": "Период загрузки", "dtype": "date"}, {"id": "login", "name": "Логин"}],
+        columns=[{"id": "period", "name": "Период загрузки", "dtype": "date"}, {"id": "client", "name": "Клиент"}],
     )
-    f = jsonl(tmp_path / "a.jsonl", ["Логин"], [["a"], ["b"]])
+    f = jsonl(tmp_path / "a.jsonl", ["Клиент"], [["a"], ["b"]])
     res = write_upload(
         f,
         registry,
         source=source,
-        mapping={"Логин": "login"},
+        mapping={"Клиент": "client"},
         upload_id="u",
         upload_seq=1,
         out_dir=tmp_path / "up",

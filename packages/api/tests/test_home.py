@@ -166,14 +166,14 @@ def test_parts_of_one_export_and_duplicate_set(home: Home, tmp_path: Path):
 
 
 def test_snapshot_period_can_be_fixed_after_upload(home: Home, tmp_path: Path):
-    f = tmp_path / "Учётки_янв_2026.csv"
-    f.write_text("Логин;Дата создания УЗ\na;2016-12-30\nb;2025-09-26\n", encoding="utf-8")
-    spec, _ = home.draft_source(f, "acc")
+    f = tmp_path / "Клиенты_янв_2026.csv"
+    f.write_text("Клиент;Дата регистрации\na;2019-03-14\nb;2025-08-02\n", encoding="utf-8")
+    spec, _ = home.draft_source(f, "clients")
     assert spec.period_from == PeriodFrom.UPLOAD
     home.create_source(spec)
-    up = home.upload("acc", f).record
+    up = home.upload("clients", f).record
     assert up.period.key == "2026-01"
     home.set_upload_period(up.id, Period.parse("2026-02"))
     out = tmp_path / "h.parquet"
-    assert home.export_history("acc", out) == 2
+    assert home.export_history("clients", out) == 2
     assert set(pl.read_parquet(out)["period"].to_list()) == {date(2026, 2, 1)}

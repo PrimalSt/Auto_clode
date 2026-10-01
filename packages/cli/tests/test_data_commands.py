@@ -75,20 +75,20 @@ def test_inspect_shows_profile_and_preview():
 
 
 def test_snapshot_source_and_parts(tmp_path: Path):
-    jan = tmp_path / "Учётки_январь_2026.csv"
-    jan.write_text("Логин;Дата создания УЗ;Были ли авторизации в январе да/нет\na;2016-12-30;да\n", encoding="utf-8")
-    out = agen("source", "create", "acc", "--from", jan, "--upload")
+    jan = tmp_path / "Клиенты_январь_2026.csv"
+    jan.write_text("Клиент;Дата регистрации;Были ли покупки в январе да/нет\na;2019-03-14;да\n", encoding="utf-8")
+    out = agen("source", "create", "clients", "--from", jan, "--upload")
     assert "Период: задаётся при загрузке" in out and "считается срезом на месяц" in out
-    assert "#1 Учётки_январь_2026.csv: 1 строк, период 2026-01" in out and "по имени файла" in out
-    feb = tmp_path / "Учётки_февраль_2026.csv"
-    feb.write_text("Логин;Дата создания УЗ;Были ли авторизации в феврале да/нет\nb;2017-01-01;нет\n", encoding="utf-8")
-    out = agen("upload", "add", "acc", feb, "-v")
+    assert "#1 Клиенты_январь_2026.csv: 1 строк, период 2026-01" in out and "по имени файла" in out
+    feb = tmp_path / "Клиенты_февраль_2026.csv"
+    feb.write_text("Клиент;Дата регистрации;Были ли покупки в феврале да/нет\nb;2020-06-01;нет\n", encoding="utf-8")
+    out = agen("upload", "add", "clients", feb, "-v")
     assert "период 2026-02" in out and "с другим месяцем в названии" in out
 
     p1 = tmp_path / "Документы_ч1.csv"
     p1.write_text("Дата;Сумма\n01.03.2026;1\n02.03.2026;2\n", encoding="utf-8")
     p2 = tmp_path / "Документы_ч2.csv"
     p2.write_text("Дата;Сумма\n03.03.2026;3\n", encoding="utf-8")
-    agen("source", "create", "docs", "--from", p1)
-    out = agen("upload", "add", "docs", p1, p2, "--concat")
+    agen("source", "create", "orders", "--from", p1)
+    out = agen("upload", "add", "orders", p1, p2, "--concat")
     assert "#1 Документы_ч1.csv + Документы_ч2.csv: 3 строк, период 2026-03" in out

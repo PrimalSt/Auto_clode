@@ -54,33 +54,33 @@ def test_draft_source_from_excel(tmp_path: Path):
 # --- Выгрузки по образцу настоящих (синтетические данные) ------------------------------
 
 
-def accounts_csv(path: Path, month: str) -> Path:
-    """Срез учётных записей на конец месяца: столбца с отчётным месяцем нет, месяц — в
+def clients_csv(path: Path, month: str) -> Path:
+    """Срез клиентов на конец месяца: столбца с отчётным месяцем нет, месяц — в
     названиях столбцов и в имени файла; даты в файле — за много лет."""
     path.write_text(
-        f"Логин;Активность;Дата создания УЗ;Последняя авторизация;Были ли авторизации в {month} да/нет;"
-        f"в {month} на платформе web\n"
-        "a;T;2016-12-30 10:11:32;2025-02-03 12:55:57;да;2\n"
-        "b;F;2021-07-28 09:50:37;;нет;\n"
-        "c;T;2025-09-26 19:10:12;2026-02-16 12:54:00;да;1\n",
+        f"Клиент;Активен;Дата регистрации;Последняя покупка;Были ли покупки в {month} да/нет;"
+        f"Покупок в {month} через сайт\n"
+        "a;T;2019-03-14 08:00:00;2025-11-20 18:30:00;да;2\n"
+        "b;F;2021-05-10 12:00:00;;нет;\n"
+        "c;T;2024-08-02 09:45:00;2026-01-12 11:15:00;да;1\n",
         encoding="utf-8",
     )
     return path
 
 
 def test_snapshot_export_gets_period_from_file_name(tmp_path: Path):
-    jan = accounts_csv(tmp_path / "accounts_jan_2026.csv", "январе")
-    spec, _ = draft_source(jan, "accounts")
+    jan = clients_csv(tmp_path / "clients_jan_2026.csv", "январе")
+    spec, _ = draft_source(jan, "clients")
     assert spec.period_from == PeriodFrom.UPLOAD and spec.period_type == PeriodUnit.MONTH
-    assert spec.column("aktivnost").dtype == DType.BOOL
-    apr = accounts_csv(tmp_path / "accounts_apr_2026.csv", "апреле")
+    assert spec.column("aktiven").dtype == DType.BOOL
+    apr = clients_csv(tmp_path / "clients_apr_2026.csv", "апреле")
     res = ingest_upload(
         IngestRequest(source=spec, path=str(apr), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
     )
     assert res.period.key == "2026-04" and res.upload.rows == 3
-    assert res.reconcile.mapping["в апреле на платформе web"] == "v_month_na_platforme_web"
+    assert res.reconcile.mapping["Покупок в апреле через сайт"] == "pokupok_v_month_cherez_sayt"
     assert not [i for i in res.issues if i.level == IssueLevel.WARNING]
-    nameless = accounts_csv(tmp_path / "accounts.csv", "мае")
+    nameless = clients_csv(tmp_path / "clients.csv", "мае")
     req = IngestRequest(source=spec, path=str(nameless), upload_id="u2", upload_seq=2, out_dir=str(tmp_path / "u2"))
     with pytest.raises(AgenError) as e:
         ingest_upload(req)
@@ -90,32 +90,32 @@ def test_snapshot_export_gets_period_from_file_name(tmp_path: Path):
 
 
 def test_missing_column_is_a_warning(tmp_path: Path):
-    jan = accounts_csv(tmp_path / "accounts_jan_2026.csv", "январе")
-    spec, _ = draft_source(jan, "accounts")
-    feb = tmp_path / "accounts_feb_2026.csv"
-    feb.write_text("Логин;Активность\na;T\n", encoding="utf-8")
+    jan = clients_csv(tmp_path / "clients_jan_2026.csv", "январе")
+    spec, _ = draft_source(jan, "clients")
+    feb = tmp_path / "clients_feb_2026.csv"
+    feb.write_text("Клиент;Активен\na;T\n", encoding="utf-8")
     res = ingest_upload(
         IngestRequest(source=spec, path=str(feb), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
     )
     warnings = [i.message for i in res.issues if i.level == IssueLevel.WARNING]
-    assert any("Последняя авторизация" in w and "пустой" in w for w in warnings)
+    assert any("Последняя покупка" in w and "пустой" in w for w in warnings)
 
 
 def test_period_column_is_the_one_within_a_month(tmp_path: Path):
-    """У заказов документов три столбца дат: дата заказа — внутри месяца выгрузки, а
-    расчётные периоды документов — за годы. Периодом выбирается первая."""
-    f = tmp_path / "docs.csv"
+    """У заявок три столбца дат: дата создания — внутри месяца выгрузки, а сроки действия —
+    за годы. Периодом выбирается первая."""
+    f = tmp_path / "orders.csv"
     f.write_text(
-        "DFNUMBER;DFCREATED;DFNUMBER.1;DFDATE_BEGIN;DFDATE_END\n"
-        "26-342059;01.04.2026 00:27:11;461018823707;2024-12-01 00:00:00.000;2024-12-31 00:00:00.000\n"
-        "26-342064;15.04.2026 10:00:00;596001469690;2016-01-01 00:00:00.000;2016-01-31 00:00:00.000\n"
-        "26-342066;30.04.2026 23:51:12;765000007985;2026-04-01 00:00:00.000;2026-04-30 23:59:59.000\n",
+        "Заявка;Создана;Счёт;Действует с;Действует по\n"
+        "З-1001;03.04.2026 09:15:00;123456789012;2023-06-01 00:00:00.000;2023-06-30 00:00:00.000\n"
+        "З-1002;15.04.2026 10:00:00;234567890123;2019-01-01 00:00:00.000;2019-01-31 00:00:00.000\n"
+        "З-1003;29.04.2026 18:40:00;345678901234;2026-04-01 00:00:00.000;2026-04-30 23:59:59.000\n",
         encoding="utf-8",
     )
-    spec, _ = draft_source(f, "docs")
-    assert spec.period_from == PeriodFrom.COLUMN and spec.period_column == "dfcreated"
+    spec, _ = draft_source(f, "orders")
+    assert spec.period_from == PeriodFrom.COLUMN and spec.period_column == "sozdana"
     assert spec.period_type == PeriodUnit.MONTH
-    assert spec.column("dfnumber_1").dtype == DType.STRING  # номера счетов — текст
+    assert spec.column("schet").dtype == DType.STRING  # номера счетов — текст
 
 
 def test_parts_are_concatenated(tmp_path: Path):

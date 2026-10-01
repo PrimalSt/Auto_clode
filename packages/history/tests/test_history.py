@@ -230,8 +230,8 @@ def test_rows_outside(uploads):
         ("выгрузка_202603.xlsx", "2026-03"),
         ("отчёт январь 2025.xlsx", "2025-01"),
         # Без года — последний такой месяц не позже сегодняшнего (сегодня — октябрь 2026).
-        ("Jan_for_report.xlsx", "2026-01"),
-        ("1_1b9v4_Obraschaemost_B2B_noyabr.xlsx", "2025-11"),
+        ("Sales_Jan.xlsx", "2026-01"),
+        ("otchet_noyabr.xlsx", "2025-11"),
         ("ноябрь-январь.xlsx", None),
         ("data.csv", None),
     ],

@@ -286,8 +286,8 @@ def infer_dtype_share(values: pl.Series) -> tuple[DType, str | None, float | Non
             return DType.STRING, None, None
         as_int = frame.select(parse_int(v)).to_series()
         if as_int.null_count() == as_float.null_count():
-            # Целые от 10 цифр (лицевые счета, номера договоров, ИНН) — коды, а не числа:
-            # в следующих строках у них бывают буквы («586A05832141»).
+            # Целые от 10 цифр (номера счетов и договоров, ИНН) — коды, а не числа:
+            # в следующих строках у них бывают буквы («12345A678901»).
             if bool((as_int.drop_nulls().abs() >= CODE_MIN).all()):
                 return DType.STRING, None, None
             return DType.INT, None, share

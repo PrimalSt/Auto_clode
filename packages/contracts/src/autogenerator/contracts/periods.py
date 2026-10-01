@@ -252,7 +252,7 @@ _MONTH_EXACT = {
 
 def month_of_word(word: str) -> int | None:
     """Номер месяца по слову: «январь», «января», «январе», «янв», «January», «Jan»,
-    транслит «yanvar», «noyabr». Иначе ``None``."""
+    транслит «yanvar», «fevral». Иначе ``None``."""
     w = word.lower().replace("ё", "е")
     if w in _MONTH_EXACT:
         return _MONTH_EXACT[w]

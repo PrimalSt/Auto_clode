@@ -66,8 +66,8 @@ def test_draft_without_dates_needs_period_column():
 
 
 def test_month_names_become_month_in_ids():
-    assert suggest_id("Были ли авторизации в январе да/нет") == "byli_li_avtorizatsii_v_month_da_net"
-    assert suggest_id("в апреле на платформе web") == "v_month_na_platforme_web"
+    assert suggest_id("Были ли покупки в январе да/нет") == "byli_li_pokupki_v_month_da_net"
+    assert suggest_id("Покупок в апреле через сайт") == "pokupok_v_month_cherez_sayt"
 
 
 def test_draft_with_period_at_upload():
@@ -77,11 +77,11 @@ def test_draft_with_period_at_upload():
         options=ReadOptions(),
         sample_rows=0,
         columns=[
-            ColumnSnapshot(source_name="Логин", dtype=DType.STRING),
-            ColumnSnapshot(source_name="Дата создания УЗ", dtype=DType.DATETIME),
+            ColumnSnapshot(source_name="Клиент", dtype=DType.STRING),
+            ColumnSnapshot(source_name="Дата регистрации", dtype=DType.DATETIME),
         ],
     )
-    spec = draft_source(snapshot, "accounts", "Учётные записи", period_from=PeriodFrom.UPLOAD)
+    spec = draft_source(snapshot, "clients", "Клиенты", period_from=PeriodFrom.UPLOAD)
     assert spec.period_from == PeriodFrom.UPLOAD and spec.period_column == "period"
     assert spec.columns[0].name == "Период загрузки" and spec.columns[0].dtype == DType.DATE
-    assert [c.id for c in spec.file_columns] == ["login", "date_sozdaniya_uz"]
+    assert [c.id for c in spec.file_columns] == ["client", "date_registratsii"]

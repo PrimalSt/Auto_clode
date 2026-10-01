@@ -16,15 +16,15 @@ uv run agen validate сценарий.yaml                           # пров�
 uv run agen inspect выгрузка.csv --preview 5                 # как прочитан файл, типы, профиль
 uv run agen source create sales --from выгрузка.csv          # источник по первой выгрузке
 uv run agen source create sales --from выгрузка.csv --yaml sales.yaml   # только черновик
-uv run agen source create acc --from Jan.xlsx --period-at-upload       # срез: период при загрузке
+uv run agen source create clients --from Клиенты.xlsx --period-at-upload   # срез: период при загрузке
 uv run agen source import sources.yaml                       # из YAML; изменения — новой версией
 uv run agen source export sales -o sales.yaml                # настройки в YAML
 uv run agen source set sales --overlap ask --keys order_no   # быстрые правки
 uv run agen source show sales --versions
 uv run agen upload add sales янв.csv фев.csv                 # загрузка с прогрессом
 uv run agen upload add sales мар.csv --overlap append        # правило, если у источника «ask»
-uv run agen upload add docs ч1.xlsx ч2.xlsx --concat         # части одной выгрузки — одна загрузка
-uv run agen upload add acc выгрузка.xlsx --period 2026-01    # период среза, если его нет в имени
+uv run agen upload add orders ч1.xlsx ч2.xlsx --concat       # части одной выгрузки — одна загрузка
+uv run agen upload add clients выгрузка.xlsx --period 2026-01 # период среза, если его нет в имени
 uv run agen upload list sales
 uv run agen upload show <id>                                 # ошибки приведения, профиль
 uv run agen upload accept <id>                               # принять загрузку «на проверке»
