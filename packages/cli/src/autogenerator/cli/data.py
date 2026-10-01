@@ -544,7 +544,7 @@ def print_coverage(rep: CoverageReport) -> None:
             row[c.period.start.month - 1] = CELL[c.state]
         typer.echo("        " + " ".join(f"{m:<3}" for m in MONTHS))
         for y, row in years.items():
-            typer.echo(f"    {y} " + " ".join(f"{x:<3}" for x in row))
+            typer.echo((f"    {y} " + " ".join(f"{x:<3}" for x in row)).rstrip())
     else:
         unit = UNIT[rep.unit]
         typer.echo(f"  Покрытие (единица — {unit}; ■ есть, ▣ наложение, · пропуск):")
