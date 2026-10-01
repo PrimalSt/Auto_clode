@@ -15,7 +15,7 @@ from typing import Annotated
 import typer
 
 from autogenerator import api
-from autogenerator.contracts import AgenError, IssueLevel, RunResult
+from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RunResult
 
 from .data import history, source_app, upload_app
 from .output import LEVEL_MARK, fail, home_option, print_snapshot, read_options_from, utf8_output
@@ -152,6 +152,130 @@ def validate(
         typer.echo(f"Ошибок: {len(errors)}", err=True)
         raise typer.Exit(1)
     typer.echo("Сценарий в порядке.")
+
+
+def _num(n: int | None, approx: bool) -> str:
+    if n is None:
+        return "?"
+    text = f"{n:,}".replace(",", " ")
+    return f"≈{text}" if approx else text
+
+
+def _sample_option(value: str) -> int | None:
+    v = value.strip().lower()
+    if v == "auto":
+        return None
+    if v == "off":
+        return 1
+    if v.isdigit() and int(v) >= 1:
+        return int(v)
+    raise typer.BadParameter("auto, off или число не меньше 1", param_hint="--sample")
+
+
+def _print_preview(res: PreviewResult, rows: int) -> None:
+    import polars as pl
+
+    head = f"Превью {res.target}"
+    if res.period is not None:
+        head += f" · период {res.period.key}"
+    if res.sample is not None:
+        keys = "; ".join(f"{i}: {', '.join(k) or 'номер строки'}" for i, k in res.sample.keys.items())
+        head += f" · выборка ≈1/{res.sample.k} ({keys})"
+    typer.echo(head)
+    approx_steps = res.sample is not None and res.target.startswith("input:")
+    if res.steps:
+        typer.echo("Шаги:")
+        stop = res.target.split("/step:", 1)[1] if "/step:" in res.target else None
+        for st in res.steps:
+            if not st.enabled:
+                typer.echo(f"  {st.id:<20} ({st.type}) отключён")
+                continue
+            if st.error:
+                typer.echo(f"  {st.id:<20} ({st.type}) ошибка: {st.error}")
+                continue
+            if st.rows_before is None:
+                continue
+            mark = "  ← превью после этого шага" if st.id == stop else ""
+            counts = f"{_num(st.rows_before, approx_steps)} → {_num(st.rows_after, approx_steps)}"
+            typer.echo(f"  {st.id:<20} ({st.type}) {counts}{mark}")
+    if res.value is not None or res.metrics:
+        for k, v in (res.metrics or {res.target: res.value}).items():
+            typer.echo(f"  {k} = {'нет данных' if v is None else v}")
+    elif res.columns:
+        typer.echo(f"Строк: {_num(res.total_rows, approx_steps)}")
+        df = pl.DataFrame(res.rows, schema=[c.name for c in res.columns], orient="row") if res.rows else None
+        if df is not None:
+            # Дробные числа — с разумной точностью: 2 знака у больших значений, 4 у долей.
+            df = df.with_columns(
+                pl.col(c).round(2 if (df[c].abs().max() or 0) >= 100 else 4)  # type: ignore[operator]
+                for c, t in df.schema.items()
+                if t.is_float()
+            )
+            with pl.Config(
+                tbl_rows=rows,
+                tbl_cols=-1,
+                tbl_width_chars=10_000,
+                fmt_str_lengths=40,
+                tbl_hide_dataframe_shape=True,
+                fmt_float="full",
+            ):
+                typer.echo(str(df))
+    for i in res.issues:
+        typer.echo(f"  {LEVEL_MARK[i.level]} {i}")
+    typer.echo(f"({res.seconds:.2f} с)")
+
+
+@app.command()
+def preview(
+    scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
+    target: Annotated[
+        str,
+        typer.Argument(help="Что показать: вход (sales), вход после шага (sales/dedupe), набор или показатель"),
+    ],
+    sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
+    data: Annotated[Path | None, typer.Option(help="Папка выгрузок: по подпапке на вход")] = None,
+    input: Annotated[
+        list[str] | None,
+        typer.Option("--input", "-i", help="id_входа=файл; можно несколько раз, по порядку загрузки"),
+    ] = None,
+    period: Annotated[str | None, typer.Option(help="Отчётный период; по умолчанию — последний")] = None,
+    rows: Annotated[int, typer.Option(help="Сколько первых строк показать")] = 20,
+    sample: Annotated[
+        str,
+        typer.Option(help="Выборка: auto — на больших данных, off — без выборки, N — каждый N-й ключ"),
+    ] = "auto",
+    json: Annotated[bool, typer.Option("--json", help="Вывести результат в JSON")] = False,
+    workdir: Annotated[Path | None, typer.Option(help="Сохранить промежуточные данные в папку")] = None,
+    accept_cast_errors: Annotated[bool, typer.Option(help="Принять загрузки с нераспознанными значениями")] = False,
+    no_home: Annotated[bool, typer.Option("--no-home", help="Не брать историю из папки данных")] = False,
+    home: Annotated[Path | None, home_option] = None,
+) -> None:
+    """Превью узла сценария: первые строки и число строк до и после каждого шага, набор
+    данных или значение показателя. На больших данных превью входа — по выборке."""
+    try:
+        res = api.preview(
+            scenario,
+            target,
+            sources=sources,
+            inputs=_parse_inputs(input or []),
+            data_dir=data,
+            period=period,
+            rows=rows,
+            sample=_sample_option(sample),
+            workdir=workdir,
+            accept_cast_errors=accept_cast_errors,
+            home=home,
+            use_home=False if no_home else None,
+        )
+    except AgenError as e:
+        _fail(e)
+        return
+    if json:
+        typer.echo(res.model_dump_json(indent=2))
+    else:
+        _print_preview(res, rows)
+    if res.errors:
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -58,6 +58,59 @@ class NodeStatus(BaseModel):
     seconds: float | None = None
 
 
+class StepStat(BaseModel):
+    """Шаг обработки входа в превью и журнале: сколько строк было и стало, сколько времени."""
+
+    id: str
+    type: str
+    enabled: bool = True
+    rows_before: int | None = None
+    rows_after: int | None = None
+    seconds: float | None = None
+    error: str | None = None
+
+
+class SampleInfo(BaseModel):
+    """Выборка, на которой построено превью: строки с ``hash(ключ) % k == 0``."""
+
+    k: int = Field(description="Берётся примерно каждая k-я строка (k-й ключ)")
+    keys: dict[str, list[str]] = Field(
+        default_factory=dict, description="Вход → столбцы ключа выборки (пусто — номер строки)"
+    )
+    inputs: list[str] = Field(default_factory=list, description="Входы, взятые выборкой; остальные — целиком")
+
+
+class PreviewColumn(BaseModel):
+    name: str
+    dtype: str
+
+
+class PreviewResult(BaseModel):
+    """Превью узла сценария (ARCHITECTURE.md, раздел 6.4): первые строки, число строк до и
+    после каждого шага, значение показателя. На больших данных — по выборке, числа строк
+    тогда приблизительные (``approximate``) и пересчитаны на всю историю."""
+
+    target: str = Field(description="Узел: input:sales, input:sales/step:dedupe, dataset:by_month, metric:revenue")
+    period: Period | None = None
+    columns: list[PreviewColumn] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list, description="Первые строки результата")
+    total_rows: int | None = None
+    value: float | int | None = Field(None, description="Значение показателя")
+    metrics: dict[str, float | int | None] = Field(
+        default_factory=dict, description="Показатель и добавленные к нему сравнения периодов"
+    )
+    steps: list[StepStat] = Field(default_factory=list)
+    sample: SampleInfo | None = None
+    approximate: bool = False
+    nodes: list[NodeStatus] = Field(default_factory=list)
+    issues: list[Issue] = Field(default_factory=list)
+    seconds: float = 0.0
+
+    @property
+    def errors(self) -> list[Issue]:
+        return [i for i in self.issues if i.level == IssueLevel.ERROR]
+
+
 @dataclass
 class EngineResult:
     """Итог движка: небольшие агрегированные таблицы и числа — то, что уходит в render."""
@@ -67,6 +120,7 @@ class EngineResult:
     metrics: dict[str, float | int | None] = field(default_factory=dict)
     nodes: list[NodeStatus] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
+    steps: dict[str, list[StepStat]] = field(default_factory=dict)
 
     def failed_nodes(self) -> dict[str, NodeStatus]:
         return {n.id: n for n in self.nodes if n.state != "ok"}

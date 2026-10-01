@@ -4,6 +4,7 @@ from pptx import Presentation
 from typer.testing import CliRunner
 
 from autogenerator.cli.main import app
+from autogenerator.contracts import PreviewResult
 
 ROOT = Path(__file__).resolve().parents[3]
 SCENARIO = ROOT / "examples" / "sales" / "scenario.yaml"
@@ -16,7 +17,7 @@ def test_run_example(tmp_path: Path):
     assert r.exit_code == 0, r.output
     assert "Отчётный период: 2026-03" in r.output
     assert "Готово:" in r.output
-    assert len(Presentation(str(out)).slides) == 6
+    assert len(Presentation(str(out)).slides) == 7
 
 
 def test_run_with_explicit_inputs_and_period(tmp_path: Path):
@@ -72,6 +73,31 @@ def test_modules():
     assert "ОШИБКА" not in r.output
     for name in ("csv", "xlsx", "dedupe", "quarter_to_date", "sum", "chart"):
         assert name in r.output
+
+
+def test_preview_step_dataset_metric_and_sample():
+    r = runner.invoke(app, ["preview", str(SCENARIO), "sales/positive_only"])
+    assert r.exit_code == 0, r.output
+    assert "Превью input:sales/step:positive_only · период 2026-03" in r.output
+    assert "positive_only        (filter)" in r.output and "← превью после этого шага" in r.output
+    assert "net_of_vat" not in r.output  # шаги после выбранного не выполняются
+    r = runner.invoke(app, ["preview", str(SCENARIO), "plan_fact", "--json"])
+    assert r.exit_code == 0, r.output
+    res = PreviewResult.model_validate_json(r.output)
+    assert [c.name for c in res.columns] == ["region", "fact", "plan", "done"]
+    assert res.total_rows == 5 and not res.approximate
+    r = runner.invoke(app, ["preview", str(SCENARIO), "metric:revenue", "--period", "2026-02"])
+    assert r.exit_code == 0, r.output
+    assert "период 2026-02" in r.output and "revenue_prev_change_pct = " in r.output
+    r = runner.invoke(app, ["preview", str(SCENARIO), "sales", "--sample", "3", "--rows", "2"])
+    assert r.exit_code == 0, r.output
+    assert "выборка ≈1/3 (sales: order_no)" in r.output and "Строк: ≈" in r.output
+
+
+def test_preview_unknown_node():
+    r = runner.invoke(app, ["preview", str(SCENARIO), "dataset:nope"])
+    assert r.exit_code == 1
+    assert "Нет узла «dataset:nope»" in r.output
 
 
 def test_bad_input_argument():

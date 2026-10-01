@@ -11,9 +11,16 @@ dependencies = [
 
 [project.entry-points."autogenerator.steps"]
 filter = "autogenerator.steps_std.steps:FilterStep"
+time_filter = "autogenerator.steps_std.steps:TimeFilterStep"
 dedupe = "autogenerator.steps_std.steps:DedupeStep"
-formula = "autogenerator.steps_std.steps:FormulaStep"
+sort = "autogenerator.steps_std.steps:SortStep"
 select = "autogenerator.steps_std.steps:SelectStep"
+rename = "autogenerator.steps_std.steps:RenameStep"
+cast = "autogenerator.steps_std.steps:CastStep"
+formula = "autogenerator.steps_std.steps:FormulaStep"
+join = "autogenerator.steps_std.join:JoinStep"
+sql = "autogenerator.steps_std.code:SqlStep"
+python = "autogenerator.steps_std.code:PythonStep"
 
 [project.entry-points."autogenerator.windows"]
 report_period = "autogenerator.steps_std.windows:ReportPeriodWindow"
@@ -32,6 +39,9 @@ count_distinct = "autogenerator.steps_std.aggregations:CountDistinctAgg"
 mean = "autogenerator.steps_std.aggregations:MeanAgg"
 min = "autogenerator.steps_std.aggregations:MinAgg"
 max = "autogenerator.steps_std.aggregations:MaxAgg"
+median = "autogenerator.steps_std.aggregations:MedianAgg"
+first = "autogenerator.steps_std.aggregations:FirstAgg"
+last = "autogenerator.steps_std.aggregations:LastAgg"
 
 [build-system]
 requires = ["uv_build>=0.8.17,<0.10"]

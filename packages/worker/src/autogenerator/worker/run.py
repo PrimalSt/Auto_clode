@@ -4,7 +4,8 @@
 Порядок: разбор сценария (engine) → импорт шаблона (theme) и проверка слайдов (render) →
 история каждого входа: из папки данных (манифест приходит в задании) или из переданных
 файлов (задание ``ingest`` для каждого, во временную историю) → отчётный период →
-расчёты (engine) → сборка (render).
+расчёты (engine) → сборка (render). Задание ``preview`` проходит тот же путь до расчётов и
+показывает один узел сценария.
 
 Модули не знают друг о друге: они обмениваются моделями из ``contracts``, а связывает их
 этот файл. Модули и плагины импортируются лениво, внутри функций, — как в исполнителе,
@@ -13,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -31,6 +33,8 @@ from autogenerator.contracts import (
     Issue,
     IssueLevel,
     Period,
+    PreviewRequest,
+    PreviewResult,
     RunRequest,
     RunResult,
     ScenarioSpec,
@@ -42,7 +46,7 @@ from autogenerator.contracts import (
 if TYPE_CHECKING:
     import polars as pl
 
-    from autogenerator.engine import InputSchema
+    from autogenerator.engine import EngineOptions, InputSchema, ScenarioPlan
     from autogenerator.plugin_host import PluginRegistry
 
 
@@ -74,15 +78,28 @@ class ManifestHistory:
 
         return coverage(self.manifests[input_id])
 
+    def fingerprint(self, input_id: str) -> str | None:
+        """Отпечаток манифеста: меняется с каждой загрузкой, правкой периода или источника."""
+        m = self.manifests.get(input_id)
+        if m is None:
+            return None
+        return hashlib.sha256(m.model_dump_json().encode("utf-8")).hexdigest()
+
 
 def _schemas(scenario: ScenarioSpec, sources: dict[str, SourceSpec]) -> dict[str, InputSchema]:
     from autogenerator.engine import InputSchema
 
-    return {
-        i.id: InputSchema(sources[i.source].period_column, sources[i.source].dtypes)
-        for i in scenario.inputs
-        if i.source in sources
-    }
+    return {i.id: InputSchema.from_source(sources[i.source]) for i in scenario.inputs if i.source in sources}
+
+
+def engine_options(cache_dir: str | None, temp_dir: str | None) -> EngineOptions:
+    """Кэш узлов и временная папка движка: из папки данных, если задание пришло оттуда."""
+    from autogenerator.engine import EngineOptions, NodeCache
+
+    return EngineOptions(
+        cache=NodeCache(Path(cache_dir)) if cache_dir else None,
+        temp_dir=Path(temp_dir) if temp_dir else None,
+    )
 
 
 def _source_issues(scenario: ScenarioSpec, sources: dict[str, SourceSpec]) -> list[Issue]:
@@ -239,15 +256,48 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     if result.errors:
         return
 
+    manifests = _histories(req, plan, registry, workdir, result.issues, result.inputs, result.from_home)
+
+    period = req.period or default_report_period(manifests[scenario.main_input.id])
+    result.period = period
+    options = engine_options(req.cache_dir, req.temp_dir)
+    engine_result = execute(plan, registry, ManifestHistory(manifests), period, workdir / "engine", options)
+    result.nodes += engine_result.nodes
+    result.issues += engine_result.issues
+    _save_engine_outputs(workdir / "engine" / "outputs", engine_result)
+
+    rendered = build_presentation(scenario, theme, engine_result, registry, output_path(req, period))
+    result.nodes += rendered.nodes
+    result.issues += rendered.issues
+    result.slides = rendered.slides
+    result.output_path = rendered.output_path
+    result.ok = rendered.output_path is not None and not result.errors
+
+
+def _histories(
+    req: RunRequest | PreviewRequest,
+    plan: ScenarioPlan,
+    registry: PluginRegistry,
+    workdir: Path,
+    issues: list[Issue],
+    log: dict[str, Any],
+    from_home: list[str],
+    only: set[str] | None = None,
+) -> dict[str, HistoryManifest]:
+    """История каждого входа (``only`` — только этих): из папки данных или из файлов."""
+    scenario = req.scenario
+    sources = {s.id: s for s in req.sources}
     manifests: dict[str, HistoryManifest] = {}
     for inp in scenario.inputs:
+        if only is not None and inp.id not in only:
+            continue
         if inp.id in req.histories:
             # История из папки данных: файлы уже загружены, читаются только нужные месяцы.
             m = req.histories[inp.id]
             manifests[inp.id] = m
-            result.from_home.append(inp.id)
+            from_home.append(inp.id)
             _dump(workdir / "manifests" / f"{inp.id}.json", m)
-            result.inputs[inp.id] = [
+            log[inp.id] = [
                 {"file": u.original_name, "upload": u.id, "rows": u.rows, "period": u.period.key}
                 for u in m.active_uploads
             ]
@@ -259,7 +309,7 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
                 f"Для входа «{inp.id}» не передано ни одного файла выгрузки",
             )
         required = set(plan.usage.get(inp.id, {}))
-        manifests[inp.id], result.inputs[inp.id] = _ingest_input(
+        manifests[inp.id], log[inp.id] = _ingest_input(
             inp.id,
             sources[inp.source],
             files,
@@ -267,22 +317,65 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
             registry,
             workdir,
             req.accept_cast_errors,
-            result.issues,
+            issues,
         )
+    return manifests
 
-    period = req.period or default_report_period(manifests[scenario.main_input.id])
-    result.period = period
-    engine_result = execute(plan, registry, ManifestHistory(manifests), period, workdir / "engine")
-    result.nodes += engine_result.nodes
-    result.issues += engine_result.issues
-    _save_engine_outputs(workdir / "engine" / "outputs", engine_result)
 
-    rendered = build_presentation(scenario, theme, engine_result, registry, output_path(req, period))
-    result.nodes += rendered.nodes
-    result.issues += rendered.issues
-    result.slides = rendered.slides
-    result.output_path = rendered.output_path
-    result.ok = rendered.output_path is not None and not result.errors
+def preview(req: PreviewRequest) -> PreviewResult:
+    """Выполнить задание ``preview``: первые строки и числа строк узла, без сборки .pptx."""
+    from autogenerator.engine import analyze, resolve_target
+    from autogenerator.engine import preview as engine_preview
+    from autogenerator.history import default_report_period
+    from autogenerator.plugin_host import PluginRegistry
+
+    t0 = time.perf_counter()
+    temp = req.workdir is None
+    workdir = Path(req.workdir) if req.workdir else Path(tempfile.mkdtemp(prefix="agen-preview-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    result = PreviewResult(target=req.target, period=req.period)
+    try:
+        registry = PluginRegistry.discover()
+        sources = {s.id: s for s in req.sources}
+        issues = _source_issues(req.scenario, sources)
+        if issues:
+            result.issues = issues
+            return result
+        plan = analyze(req.scenario, registry, _schemas(req.scenario, sources))
+        target = resolve_target(plan, req.target)
+        closure = plan.closure([target.split("/", 1)[0]])
+        needed = {n.split(":", 1)[1] for n in closure if n.startswith("input:")}
+        main = req.scenario.main_input.id
+        if req.period is None:
+            needed.add(main if (main in req.histories or req.inputs.get(main)) else next(iter(sorted(needed)), main))
+        log: dict[str, Any] = {}
+        prep: list[Issue] = []
+        manifests = _histories(req, plan, registry, workdir, prep, log, [], only=needed)
+        if req.period is not None:
+            period = req.period
+        else:
+            src = main if main in manifests else sorted(manifests)[0]
+            period = default_report_period(manifests[src])
+        options = engine_options(req.cache_dir, req.temp_dir)
+        result = engine_preview(
+            plan,
+            registry,
+            ManifestHistory(manifests),
+            period,
+            workdir / "engine",
+            target,
+            rows=req.rows,
+            sample=req.sample,
+            options=options,
+        )
+        result.issues = prep + result.issues
+    except AgenError as e:
+        result.issues.append(Issue(level=IssueLevel.ERROR, code=str(e.code), message=str(e)))
+    finally:
+        result.seconds = round(time.perf_counter() - t0, 3)
+        if temp:
+            shutil.rmtree(workdir, ignore_errors=True)
+    return result
 
 
 def _save_engine_outputs(folder: Path, engine_result: Any) -> None:

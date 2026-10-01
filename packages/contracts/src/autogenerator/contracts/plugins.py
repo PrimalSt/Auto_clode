@@ -12,24 +12,30 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field
 
 from .periods import DateSpan, Period
+from .results import Issue
 from .scenario import WindowSpec
-from .sources import ReadOptions
+from .sources import DType, ReadOptions
 from .theme import Geometry
 
 if TYPE_CHECKING:
     import polars as pl
 
-PLUGIN_API_VERSION = "0.2"
+PLUGIN_API_VERSION = "0.3"
+
+ColumnTypes = dict[str, DType | None]
+"""Столбцы таблицы и их типы; ``None`` — тип станет известен только после прогона
+(например, столбец, который добавил код на Python без объявленного типа)."""
 
 
 class PluginKind(StrEnum):
@@ -172,27 +178,111 @@ class ReaderPlugin(Plugin):
 
 
 class ExpressionTools(Protocol):
-    """Работа с формулами на SQL (диалект DuckDB). Реализацию даёт ``engine``."""
+    """Работа с SQL (диалект DuckDB) без данных. Реализацию даёт ``engine``."""
 
     def expr(self, sql: str) -> pl.Expr:
-        """Перевести SQL-выражение в выражение Polars."""
+        """Перевести SQL-выражение в выражение Polars. Если в нём есть функция, которой нет
+        в таблице перевода, — ``AgenError`` с кодом ``expression``; при выполнении такие
+        формулы считает DuckDB (``StepContext.with_column`` и ``filter``)."""
         ...
 
     def columns_in(self, sql: str) -> set[str]:
         """Какие столбцы использует SQL-выражение."""
         ...
 
+    def tables_in(self, sql: str) -> set[str]:
+        """Какие таблицы читает SQL-запрос (``data`` — текущая таблица, остальные — по ``id``)."""
+        ...
+
+    def query_columns(self, sql: str, table: str) -> set[str] | None:
+        """Какие столбцы таблицы ``table`` использует запрос; ``None`` — все (``SELECT *``)."""
+        ...
+
+
+class SchemaTools(ExpressionTools, Protocol):
+    """Что шаг получает при разборе сценария до чтения данных: типы столбцов."""
+
+    def expr_type(self, sql: str, schema: ColumnTypes) -> DType | None:
+        """Тип результата SQL-выражения над таблицей со столбцами ``schema``; ``None`` —
+        не определить без данных. Ошибка в формуле — ``AgenError``."""
+        ...
+
+    def query_schema(self, sql: str, tables: Mapping[str, ColumnTypes]) -> ColumnTypes | None:
+        """Столбцы и типы результата SQL-запроса. ``tables`` — текущая таблица (``data``);
+        таблицы других входов сценария движок подставляет сам. ``None`` — не определить без
+        прогона (нужна таблица, столбцы которой известны только после него). Ошибка —
+        ``AgenError``."""
+        ...
+
+    def input_schema(self, input_id: str) -> ColumnTypes | None:
+        """Столбцы другого входа сценария после его обработки; ``None`` — входа нет или его
+        столбцы станут известны только после прогона."""
+        ...
+
+
+CodeMode = Literal["table", "lazy", "batches"]
+CodeFrame = Literal["pandas", "polars"]
+PandasTypes = Literal["numpy", "arrow"]
+
 
 class StepContext(ExpressionTools, Protocol):
     """Что шаг получает при выполнении."""
 
     input_id: str
+    step_id: str
     period: Period
     period_column: str
+    anchor: date
+    """Последний день, от которого отсчитываются относительные периоды: конец отчётного
+    периода или дата запуска (настройка сценария ``relative_to``)."""
+    large: bool
+    """Данных много: операции, которым нужна вся таблица (удаление дубликатов, сортировка,
+    объединение), выгоднее отдать DuckDB (``sql``) с выгрузкой на диск."""
+    preview: bool
+    """Шаг выполняется для превью, часто на выборке: предупреждения о данных не выдаются."""
 
     def window(self, spec: WindowSpec | str) -> DateSpan: ...
 
     def warn(self, message: str) -> None: ...
+
+    def log(self, text: str) -> None:
+        """Строка в журнал запуска (например, вывод ``print`` пользовательского кода)."""
+        ...
+
+    def with_column(self, lf: pl.LazyFrame, name: str, sql: str) -> pl.LazyFrame:
+        """Добавить или заменить столбец по SQL-формуле: в Polars, а если формулу не
+        перевести — в DuckDB с тем же результатом."""
+        ...
+
+    def filter(self, lf: pl.LazyFrame, sql: str) -> pl.LazyFrame:
+        """Оставить строки, где условие истинно (пусто — ложно, как в SQL)."""
+        ...
+
+    def input(self, input_id: str) -> pl.LazyFrame:
+        """Результат обработки другого входа сценария (из ``inputs_used``)."""
+        ...
+
+    def sql(self, query: str, tables: Mapping[str, pl.LazyFrame]) -> pl.LazyFrame:
+        """Выполнить запрос в DuckDB. Таблицы передаются через Parquet на диске, DuckDB
+        считает с лимитом памяти и выгрузкой на диск, результат — ленивая таблица над Parquet."""
+        ...
+
+    def run_code(
+        self,
+        lf: pl.LazyFrame,
+        code: str,
+        *,
+        mode: CodeMode = "table",
+        frame: CodeFrame = "pandas",
+        function: str = "transform",
+        timeout: float | None = None,
+        pandas_types: PandasTypes = "numpy",
+    ) -> pl.LazyFrame:
+        """Выполнить пользовательский код на Python: ``table`` и ``batches`` — в отдельном
+        процессе с таймаутом и лимитом памяти, ``lazy`` — над ленивой таблицей Polars.
+        ``pandas_types`` — типы столбцов pandas: привычные numpy или Arrow (экономнее по
+        памяти, но не все методы pandas с ними работают)."""
+        ...
 
 
 class StepPlugin(ParamsPlugin):
@@ -203,7 +293,13 @@ class StepPlugin(ParamsPlugin):
     """Построчный шаг: результат строки не зависит от других строк, поэтому нижнюю границу
     истории можно протолкнуть через него (раздел 6.4)."""
 
-    def inputs_used(self, params: Any) -> list[str]:
+    def lookback(self, params: Any) -> int | None:
+        """Сколько периодов истории до нижней границы нужно шагу: 0 — построчный шаг,
+        ``None`` — вся история (граница не проталкивается). Удаление дубликатов с глубиной
+        поиска N возвращает N."""
+        return 0 if self.row_local else None
+
+    def inputs_used(self, params: Any, tools: ExpressionTools) -> list[str]:
         """Другие входы сценария, которые нужны шагу (объединение, SQL)."""
         return []
 
@@ -211,9 +307,36 @@ class StepPlugin(ParamsPlugin):
     def columns_used(self, params: Any, tools: ExpressionTools) -> set[str]:
         """Столбцы, которые шаг читает. По ним строится сверка структуры."""
 
-    def output_columns(self, params: Any, columns: list[str]) -> list[str]:
-        """Столбцы после шага. По умолчанию шаг их не меняет."""
-        return columns
+    def columns_mentioned(self, params: Any) -> set[str]:
+        """Слабая связь: слова, которые могут быть столбцами (строки в коде на Python).
+        Если такого столбца нет в выгрузке, это предупреждение, а не блокировка."""
+        return set()
+
+    def reads_all_columns(self, params: Any, tools: ExpressionTools) -> bool:
+        """Нужны ли шагу все столбцы входа (код без ``uses``, ``SELECT *``)."""
+        return False
+
+    def key_columns(self, params: Any) -> dict[str, list[str]]:
+        """Столбцы, строки с одинаковыми значениями которых шаг сравнивает между собой:
+        ``data`` — ключ текущей таблицы (дубликаты, объединение), другие входы — по ``id``
+        (ключ второй стороны объединения). Превью на выборке берёт строки по хешу этих
+        столбцов, чтобы дубликаты и пары ключей попадали в выборку вместе."""
+        return {}
+
+    def cacheable(self, params: Any) -> bool:
+        """Можно ли кэшировать результат шага. Код на Python, который читает что-то кроме
+        своих входов (файлы, сеть, текущее время), объявляет ``cache: false``."""
+        return True
+
+    def output_schema(self, params: Any, schema: ColumnTypes, tools: SchemaTools) -> ColumnTypes | None:
+        """Столбцы и типы после шага; ``None`` — станут известны только после прогона.
+        По умолчанию шаг их не меняет."""
+        return schema
+
+    def check(self, params: Any, tools: ExpressionTools) -> list[Issue]:
+        """Проверка параметров без данных сверх модели ``Params``: синтаксис кода, опасные
+        вызовы и т. п. Ошибки (``level=error``) не дают запустить сценарий."""
+        return []
 
     @abstractmethod
     def apply(self, lf: pl.LazyFrame, params: Any, ctx: StepContext) -> pl.LazyFrame: ...
@@ -236,6 +359,9 @@ class AggregationPlugin(Plugin):
 
     kind = PluginKind.AGGREGATION
     needs_column: ClassVar[bool] = True
+    needs_order: ClassVar[bool] = False
+    """Результат зависит от порядка строк (первое и последнее значение): движок сортирует
+    строки по столбцу периода и порядку загрузки перед агрегатом."""
 
     @abstractmethod
     def polars_expr(self, column: str | None) -> pl.Expr: ...
