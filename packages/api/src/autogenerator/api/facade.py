@@ -6,10 +6,10 @@
     result = run("examples/sales/scenario.yaml", period="2026-03", output="отчёт.pptx")
     print(result.output_path, result.warnings)
 
-История входа берётся из папки данных приложения (``agen upload``), если там есть его
-источник. Иначе — из файлов: явно (``inputs={"sales": ["jan.csv", "feb.csv"]}``) или из
-папки выгрузок ``data`` рядом со сценарием, по подпапке на вход, в порядке имён. Явно
-переданные файлы и папка выгрузок важнее папки данных.
+История входа берётся из файлов, переданных явно (``inputs={"sales": ["jan.csv",
+"feb.csv"]}`` или папка выгрузок ``data_dir``: по подпапке на вход, в порядке имён), иначе —
+из папки данных приложения (``agen upload add``), если там есть его источник, иначе — из
+папки ``data`` рядом со сценарием.
 """
 
 from __future__ import annotations
@@ -110,18 +110,24 @@ def run(
 ) -> RunResult:
     """Собрать отчёт.
 
-    Вход берёт историю из папки данных (``home``, по умолчанию — папка приложения), если
-    там есть его источник и для него не переданы файлы. ``inputs`` дополняют и
-    переопределяют файлы из ``data_dir`` (по умолчанию — папка ``data`` рядом со
-    сценарием). ``use_home=False`` — только файлы; ``True`` — только папка данных.
+    Для входа без файлов в ``inputs`` и ``data_dir`` история берётся из папки данных
+    (``home``, по умолчанию — папка приложения), если там есть его источник, иначе — из
+    папки ``data`` рядом со сценарием. ``use_home=False`` — только файлы; ``True`` —
+    только папка данных для всех входов без файлов.
     ``period`` — «2026-03», «2026-Q1» и т. п.; по умолчанию — последний период основного
     входа.
     """
     sc, srcs, theme_path, base = _resolve(scenario, sources, theme)
-    files = {} if use_home else find_inputs(sc, data_dir if data_dir is not None else base / "data")
+    # Откуда история входа, по убыванию важности: файлы --input, папка выгрузок --data,
+    # папка данных приложения, папка data рядом со сценарием.
+    files = find_inputs(sc, data_dir) if data_dir is not None else {}
     for k, v in (inputs or {}).items():
         files[k] = [str(p) for p in v]
     histories, home_specs = ({}, []) if use_home is False else _home_histories(sc, files, home, use_home is True)
+    if not use_home:
+        for k, v in find_inputs(sc, base / "data").items():
+            if k not in files and k not in histories:
+                files[k] = v
     by_id = {s.id: s for s in srcs}
     for spec in home_specs:
         by_id[spec.id] = spec

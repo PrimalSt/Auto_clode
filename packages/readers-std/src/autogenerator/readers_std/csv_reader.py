@@ -296,7 +296,7 @@ def _chunks(
         eof = False
         while True:
             while len(buf) < chunk_bytes and not eof:
-                more = f.read(chunk_bytes)
+                more = f.read(max(chunk_bytes - len(buf), 1 << 16))
                 if not more:
                     eof = True
                     break
@@ -396,7 +396,9 @@ class CsvReader(ReaderPlugin):
             header_row = detect_header_row(rows, width) or 1
         return ReadOptions(encoding=encoding, delimiter=delimiter, quote=quote, header_row=header_row, sheet=None)
 
-    def header(self, path: Path, options: ReadOptions) -> list[str]:
+    def columns(self, path: Path, options: ReadOptions) -> list[str]:
+        if not (options.encoding and options.delimiter and options.header_row):
+            options = self.sniff(path, options)
         assert options.encoding and options.delimiter and options.header_row
         enc = "utf-8-sig" if options.encoding == "utf-8-sig" else options.encoding
         try:
@@ -465,7 +467,7 @@ class CsvReader(ReaderPlugin):
     ) -> Iterator[pa.RecordBatch]:
         opts = options if options.encoding and options.delimiter and options.header_row else self.sniff(path, options)
         assert opts.encoding and opts.header_row
-        names = self.header(path, opts)
+        names = self.columns(path, opts)
         total = os.path.getsize(path)
         chunks = read_ahead(_chunks(path, opts.encoding, opts.header_row, opts.quote, self.chunk_bytes), depth=2)
         for chunk in chunks:
@@ -479,13 +481,13 @@ class CsvReader(ReaderPlugin):
         """Начало файла плюс порции из середины и конца (типы в конце выгрузки бывают другими)."""
         opts = options if options.encoding and options.delimiter and options.header_row else self.sniff(path, options)
         assert opts.encoding and opts.header_row
-        names = self.header(path, opts)
+        names = self.columns(path, opts)
         size = os.path.getsize(path)
         head: list[pl.DataFrame] = []
         got = 0
         head_end = 0
         read_rows = 0
-        for chunk in _chunks(path, opts.encoding, opts.header_row, opts.quote, min(self.chunk_bytes, 4 << 20)):
+        for chunk in _chunks(path, opts.encoding, opts.header_row, opts.quote, min(self.chunk_bytes, PROBE_BYTES)):
             df = self._parse(path, chunk, names, opts)
             read_rows += df.height
             head.append(df.head(rows - got))
@@ -505,7 +507,8 @@ class CsvReader(ReaderPlugin):
                     continue
                 probe = self._probe_rows(path, start, names, opts)
                 if probe is not None and probe.height:
-                    frames.append(probe.head(max(rows // 4, 100)))
+                    n = max(rows // 4, 100)
+                    frames.append(probe.tail(n) if label == "конец" else probe.head(n))
                     parts.append(label)
         table = pl.concat(frames, how="vertical") if frames else pl.DataFrame(schema=dict.fromkeys(names, pl.String))
         return SampleTable(table.to_arrow(), parts, estimate)

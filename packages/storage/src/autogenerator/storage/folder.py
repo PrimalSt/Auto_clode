@@ -89,8 +89,11 @@ class FolderLock:
         try:
             _lock(fh)
         except OSError:
-            fh.seek(0)
-            who = fh.read().decode("utf-8", "replace").strip() or "другой процесс"
+            try:
+                fh.seek(0)
+                who = fh.read(512).decode("utf-8", "replace").strip() or "другой процесс"
+            except OSError:
+                who = "другой процесс"
             fh.close()
             raise AgenError(
                 ErrorCode.DATA_FOLDER_LOCKED,
@@ -126,12 +129,15 @@ class FolderLock:
 if sys.platform == "win32":
     import msvcrt
 
+    # Запирается байт за концом текста: тогда второй процесс может прочитать, кто держит папку.
+    _LOCK_OFFSET = 4096
+
     def _lock(fh: IO[bytes]) -> None:
-        fh.seek(0)
+        fh.seek(_LOCK_OFFSET)
         msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
 
     def _unlock(fh: IO[bytes]) -> None:
-        fh.seek(0)
+        fh.seek(_LOCK_OFFSET)
         msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 else:

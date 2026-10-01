@@ -213,13 +213,14 @@ def source_export(
 def source_import(
     file: Annotated[Path, typer.Argument(help="Источники .yaml (как sources.yaml примера)")],
     comment: Annotated[str, typer.Option(help="Комментарий к новой версии")] = "",
+    force: Annotated[bool, typer.Option(help="Разрешить убрать столбцы, которые есть в загрузках")] = False,
     home: HomeOpt = None,
 ) -> None:
     """Создать источники из YAML или сохранить новую версию настроек."""
     with _home(home, write=True) as h:
         try:
             before = {s.id: s.version for s in h.sources()}
-            recs = h.import_sources(file, comment)
+            recs = h.import_sources(file, comment, force)
         except AgenError as e:
             fail(e)
             return

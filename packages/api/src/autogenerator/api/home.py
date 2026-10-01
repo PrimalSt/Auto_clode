@@ -34,6 +34,7 @@ from autogenerator.contracts import (
     IngestRequest,
     IngestResult,
     Issue,
+    IssueLevel,
     OverlapPolicy,
     Period,
     PeriodUnit,
@@ -166,19 +167,34 @@ class Home:
         self._need_write()
         return self.store.create_source(spec, comment)
 
-    def update_source(self, spec: SourceSpec, comment: str = "") -> SourceRecord:
+    def update_source(self, spec: SourceSpec, comment: str = "", force: bool = False) -> SourceRecord:
         """Новая версия настроек. Загрузки не переписываются: смена типа столбца
-        применяется при чтении истории."""
+        применяется при чтении истории. Убрать столбец, который есть в загрузках, можно
+        только с ``force``: загрузки хранят столбцы по id, и его данные пропадут из истории."""
         self._need_write()
+        if not force:
+            self._check_dropped(spec)
         return self.store.update_source(spec, comment)
 
-    def import_sources(self, path: str | Path, comment: str = "") -> list[SourceRecord]:
+    def _check_dropped(self, spec: SourceSpec) -> None:
+        used = {cid for u in self.store.list_uploads(spec.id) for cid in u.mapping.values()}
+        dropped = sorted(used - {c.id for c in spec.columns})
+        if dropped:
+            raise AgenError(
+                ErrorCode.SOURCE_CHANGE,
+                f"В загрузках источника «{spec.id}» есть столбцы, которых нет в новых настройках: "
+                + ", ".join(dropped),
+                hint="id столбцов после загрузок не меняют: новое название файла добавьте в aliases. "
+                "Убрать столбец из истории можно с --force.",
+            )
+
+    def import_sources(self, path: str | Path, comment: str = "", force: bool = False) -> list[SourceRecord]:
         """Источники из YAML: новые создаются, существующие получают новую версию."""
         self._need_write()
         out = []
         for spec in load_model_list(SourceSpec, path):
             if self.store.has_source(spec.id):
-                out.append(self.store.update_source(spec, comment or f"из {Path(path).name}"))
+                out.append(self.update_source(spec, comment or f"из {Path(path).name}", force))
             else:
                 out.append(self.store.create_source(spec, comment or f"из {Path(path).name}"))
         return out
@@ -285,6 +301,15 @@ class Home:
                 if chosen == OverlapPolicy.MERGE_DEDUPE and not spec.keys:
                     raise AgenError(
                         ErrorCode.SPEC_INVALID, f"Для merge_dedupe у источника «{spec.id}» нужны ключи (keys)"
+                    )
+                if chosen == OverlapPolicy.APPEND:
+                    res.issues.append(
+                        Issue(
+                            level=IssueLevel.WARNING,
+                            node=f"source:{spec.id}",
+                            message=f"{p.name}: период {res.period.key} уже загружен; строки добавятся к прежним — "
+                            "проверьте, нет ли двойного учёта",
+                        )
                     )
             up = res.upload
             status = up.status

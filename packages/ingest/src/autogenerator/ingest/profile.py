@@ -1,10 +1,11 @@
 """Профиль столбцов: пустые, уникальные, минимум, максимум, самые частые значения (F-106).
 
 Для снимка структуры профиль считается по выборке (``exact=False``), после записи
-загрузки — точно, по её Parquet: один проход по всем столбцам и по проходу на частые
-значения столбцов, где значений немного. На миллионах строк число уникальных — оценка
-(HyperLogLog), а частые значения не считаются, если почти все значения разные: так
-профиль не требует памяти на все значения столбца.
+загрузки — точно, по её Parquet: один потоковый проход по всем столбцам и по проходу на
+частые значения текстовых и целых столбцов, где значений немного. На миллионах строк число
+уникальных — оценка (HyperLogLog), а частые значения не считаются, если почти все значения
+разные: так профиль не держит в памяти все значения столбца (10 млн строк × 30 столбцов —
+около 0,8 ГБ).
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ EXACT_UNIQUE_ROWS = 1_000_000
 """До стольких строк число уникальных считается точно."""
 TOP_MAX_UNIQUE = 100_000
 """Частые значения считаются, если уникальных не больше стольких."""
+TOP_TYPES = (pl.String, pl.Boolean, pl.Int64, pl.Int32)
+"""У дат и дробных чисел частые значения мало что говорят: для них — минимум и максимум."""
 
 
 def _text(v: object) -> str | None:
@@ -68,19 +71,25 @@ def _profile(lf: pl.LazyFrame, columns: list[str], exact: bool) -> dict[str, Col
             exact=exact,
         )
         non_null = rows - nulls
-        if non_null and unique <= TOP_MAX_UNIQUE and not (unique >= non_null and non_null > TOP_N):
-            top_for.append(c)
-        elif non_null:
-            p.top_skipped = True
+        if non_null and schema[c] in TOP_TYPES:
+            if unique <= TOP_MAX_UNIQUE and not (unique >= non_null and non_null > TOP_N):
+                top_for.append(c)
+            else:
+                p.top_skipped = True
         out[c] = p
-    if top_for:
-        # Частые значения всех таких столбцов — одним проходом.
-        tops = lf.select(
-            [pl.col(c).drop_nulls().value_counts(sort=True, name="n").head(TOP_N).implode().alias(c) for c in top_for]
-        ).collect()
-        for c in top_for:
-            counts = sorted(((r[c], int(r["n"])) for r in tops.get_column(c)[0]), key=lambda vc: (-vc[1], str(vc[0])))
-            out[c].top = [ValueCount(value=_text(v) or "", count=n) for v, n in counts]
+    for c in top_for:
+        # По столбцу за проход: Parquet читает только его, а счётчик значений не больше
+        # TOP_MAX_UNIQUE строк. Все столбцы разом держали бы их в памяти одновременно.
+        tops = (
+            lf.select(c)
+            .drop_nulls()
+            .group_by(c)
+            .agg(pl.len().alias("_n"))
+            .sort(["_n", c], descending=[True, False])
+            .head(TOP_N)
+            .collect(engine="streaming")
+        )
+        out[c].top = [ValueCount(value=_text(v) or "", count=int(n)) for v, n in tops.iter_rows()]
     return out
 
 

@@ -101,6 +101,7 @@ mypy_path = [
     "packages/worker/src",
     "packages/api/src",
     "packages/cli/src",
+    "tools",
 ]
 
 [[tool.mypy.overrides]]

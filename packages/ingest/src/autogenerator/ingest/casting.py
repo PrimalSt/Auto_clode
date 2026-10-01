@@ -279,6 +279,9 @@ def infer_dtype_share(values: pl.Series) -> tuple[DType, str | None, float | Non
     as_float = frame.select(parse_float(v)).to_series()
     share = _share(as_float, total)
     if share >= INFER_THRESHOLD:
+        # Ведущие нули («0274…», «007») — признак кода: число их потеряет.
+        if bool(s.str.strip_chars().str.contains(r"^0\d").any()):
+            return DType.STRING, None, None
         as_int = frame.select(parse_int(v)).to_series()
         if as_int.null_count() == as_float.null_count():
             return DType.INT, None, share

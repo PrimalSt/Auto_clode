@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import polars as pl
@@ -70,6 +71,14 @@ def read_options(
     return reader, reader.sniff(p, options or ReadOptions())
 
 
+CODE_WORDS = ("инн", "кпп", "огрн", "бик", "окпо", "код", "номер", "телефон", "артикул", "штрихкод", "id")
+
+
+def _looks_like_code(name: str) -> bool:
+    words = re.findall(r"[a-zа-яё0-9]+", name.lower())
+    return "№" in name or any(w.startswith(c) for w in words for c in CODE_WORDS)
+
+
 def _cell(v: object) -> str | None:
     return None if v is None else str(v)
 
@@ -100,6 +109,9 @@ def inspect_file(
     for name in df.columns:
         s = df.get_column(name)
         dtype, fmt_found, share = infer_dtype_share(s)
+        if dtype == DType.INT and _looks_like_code(name):
+            # ИНН, коды, номера и телефоны — текст: с ними не считают, а ведущие нули важны.
+            dtype, share = DType.STRING, None
         sample_values = [str(v) for v in s.drop_nulls().unique(maintain_order=True).head(5).to_list()]
         columns.append(
             ColumnSnapshot(

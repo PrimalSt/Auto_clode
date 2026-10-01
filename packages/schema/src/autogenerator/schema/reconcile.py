@@ -57,9 +57,10 @@ def reconcile(
     unmapped = [c.source_name for c in snapshot.columns if c.source_name not in mapping]
     for cid in missing_required:
         spec = source.column(cid)
+        what = "столбца периода" if cid == source.period_column else "столбца"
+        why = "" if cid == source.period_column else ", а он нужен сценарию"
         messages.append(
-            f"Нет столбца «{spec.name}» (id {cid}), а он нужен сценарию. "
-            f"Искали названия: {', '.join([spec.name, *spec.aliases])}"
+            f"Нет {what} «{spec.name}» (id {cid}){why}. Искали названия: {', '.join([spec.name, *spec.aliases])}"
         )
     for cid in missing_optional:
         messages.append(f"Нет столбца «{source.column(cid).name}» (id {cid}); в этой загрузке он пустой")
