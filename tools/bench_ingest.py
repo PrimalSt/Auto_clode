@@ -60,10 +60,18 @@ def peak_memory_bytes() -> int:
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
 
+        # Типы аргументов обязательны: без них ctypes передаёт псевдодескриптор процесса
+        # как 32-битное int, вызов в 64-битном Windows не срабатывает и память выходит 0.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
         c = Counters()
         c.cb = ctypes.sizeof(c)
-        proc = ctypes.windll.kernel32.GetCurrentProcess()
-        ctypes.windll.psapi.GetProcessMemoryInfo(proc, ctypes.byref(c), c.cb)
+        if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
         return int(c.PeakWorkingSetSize)
     import resource
 
@@ -83,6 +91,9 @@ def child(fmt: str, path: Path, home: Path) -> None:
         out = h.upload("bench", path)
     t2 = time.perf_counter()
     res = out.result.upload
+    peak = peak_memory_bytes()
+    if peak <= 0:
+        raise SystemExit("Не удалось измерить пиковую память процесса")
     print(
         json.dumps(
             {
@@ -95,7 +106,7 @@ def child(fmt: str, path: Path, home: Path) -> None:
                 "write_seconds": res.seconds,
                 "parquet_bytes": out.record.data_bytes,
                 "cast_errors": sum(c.errors for c in res.cast_issues),
-                "peak_bytes": peak_memory_bytes(),
+                "peak_bytes": peak,
             }
         )
     )
