@@ -5,6 +5,7 @@ from autogenerator.contracts import (
     ColumnSnapshot,
     DType,
     OverlapPolicy,
+    PeriodFrom,
     PeriodUnit,
     ReadOptions,
     SchemaSnapshot,
@@ -62,3 +63,25 @@ def test_draft_without_dates_needs_period_column():
     assert spec.column("month").dtype == DType.DATE
     with pytest.raises(AgenError, match="нет столбца"):
         draft_source(snap, "s", "S", period_column="Нет")
+
+
+def test_month_names_become_month_in_ids():
+    assert suggest_id("Были ли авторизации в январе да/нет") == "byli_li_avtorizatsii_v_month_da_net"
+    assert suggest_id("в апреле на платформе web") == "v_month_na_platforme_web"
+
+
+def test_draft_with_period_at_upload():
+    snapshot = SchemaSnapshot(
+        path="Jan.csv",
+        format="csv",
+        options=ReadOptions(),
+        sample_rows=0,
+        columns=[
+            ColumnSnapshot(source_name="Логин", dtype=DType.STRING),
+            ColumnSnapshot(source_name="Дата создания УЗ", dtype=DType.DATETIME),
+        ],
+    )
+    spec = draft_source(snapshot, "accounts", "Учётные записи", period_from=PeriodFrom.UPLOAD)
+    assert spec.period_from == PeriodFrom.UPLOAD and spec.period_column == "period"
+    assert spec.columns[0].name == "Период загрузки" and spec.columns[0].dtype == DType.DATE
+    assert [c.id for c in spec.file_columns] == ["login", "date_sozdaniya_uz"]

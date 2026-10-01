@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -18,10 +19,12 @@ from autogenerator.contracts import (
     AgenError,
     CoverageReport,
     CoverageState,
+    DateSpan,
     IngestResult,
     IssueLevel,
     OverlapPolicy,
     Period,
+    PeriodFrom,
     PeriodUnit,
     ReadOptions,
     SourceSpec,
@@ -94,8 +97,13 @@ def print_source(spec: SourceSpec, version: int | None = None) -> None:
     o = spec.options
     how = ", ".join(f"{k} {v!r}" for k, v in o.model_dump(exclude_none=True).items() if not (k == "quote" and v == '"'))
     typer.echo(f"  Формат: {spec.format or 'по файлу'}{'; ' + how if how else ''}")
+    where = (
+        f"задаётся при загрузке — по имени файла или --period (столбец {spec.period_column})"
+        if spec.period_from == PeriodFrom.UPLOAD
+        else f"столбец {spec.period_column}"
+    )
     typer.echo(
-        f"  Период: столбец {spec.period_column}, тип «{UNIT[spec.period_type]}»; при пересечении — "
+        f"  Период: {where}, тип «{UNIT[spec.period_type]}»; при пересечении — "
         f"{POLICY[spec.overlap_policy]} ({spec.overlap_policy.value})"
     )
     if spec.keys:
@@ -131,6 +139,14 @@ def source_create(
         str | None, typer.Option(help="Столбец периода — название в файле; по умолчанию первый столбец с датами")
     ] = None,
     period_type: Annotated[PeriodUnit | None, typer.Option(help="Тип периода; по умолчанию — по датам")] = None,
+    period_at_upload: Annotated[
+        bool,
+        typer.Option(
+            "--period-at-upload",
+            help="Выгрузка — срез без столбца с отчётным месяцем: период берётся из имени файла или --period "
+            "при загрузке. По умолчанию так, если ни один столбец дат не укладывается в один месяц",
+        ),
+    ] = False,
     overlap: Annotated[OverlapPolicy, typer.Option(help="Что делать при пересечении периодов")] = (
         OverlapPolicy.REPLACE_PERIOD
     ),
@@ -148,7 +164,15 @@ def source_create(
     opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
     with _home(home, write=out is None) as h:
         try:
-            spec, _snap = h.draft_source(sample, source_id, name, period_column, period_type, opts)
+            spec, _snap = h.draft_source(
+                sample,
+                source_id,
+                name,
+                period_column,
+                period_type,
+                opts,
+                period_from=PeriodFrom.UPLOAD if period_at_upload else None,
+            )
             spec = spec.model_copy(update={"overlap_policy": overlap})
             if keys is not None:
                 spec = SourceSpec.model_validate({**spec.model_dump(), "keys": _keys(keys)})
@@ -162,6 +186,11 @@ def source_create(
             fail(e)
             return
         print_source(rec.spec, rec.version)
+        if rec.spec.period_from == PeriodFrom.UPLOAD and not period_at_upload:
+            typer.echo(
+                "  Ни один столбец дат не укладывается в один месяц, а в имени файла есть месяц: выгрузка "
+                "считается срезом на месяц. Если это не так, укажите --period-column «Название столбца»."
+            )
         typer.echo(
             f"Источник «{rec.id}» создан. Поправить: agen source export {rec.id} -o {rec.id}.yaml, затем import."
         )
@@ -296,7 +325,7 @@ def _choose_policy(res: IngestResult, spec: SourceSpec, view: ProgressView) -> O
     return choices[n - 1] if 1 <= n <= len(choices) else None
 
 
-def _print_upload(out: UploadOutcome, verbose: bool) -> None:
+def _print_upload(out: UploadOutcome, verbose: bool, spec: SourceSpec, period_given: bool) -> None:
     r = out.record
     res = out.result
     took = f", {res.upload.seconds:.0f} с" if res.upload.seconds >= 1 else ""
@@ -306,8 +335,10 @@ def _print_upload(out: UploadOutcome, verbose: bool) -> None:
     )
     if res.upload.sheets and len(res.upload.sheets) > 1:
         typer.echo(f"  Листы: {', '.join(res.upload.sheets)}")
-    if r.period_from_data and r.period_from_data.unit == PeriodUnit.RANGE and r.period == r.period_from_data:
-        typer.echo(f"  Период взят по датам в файле. Поправить: agen upload period {r.id} 2026-03-01..2026-03-31")
+    if spec.period_from == PeriodFrom.UPLOAD and not period_given:
+        typer.echo(f"  Период — по имени файла. Если не так: agen upload period {r.id} ГГГГ-ММ")
+    elif r.period_from_data and r.period_from_data.unit == PeriodUnit.RANGE and r.period == r.period_from_data:
+        typer.echo(f"  Период взят по датам в файле. Поправить: agen upload period {r.id} ГГГГ-ММ-ДД..ГГГГ-ММ-ДД")
     if res.overlaps:
         rule = r.overlap_policy or None
         how = f" — {POLICY[rule]}" if rule else ""
@@ -336,15 +367,18 @@ def _upload_files(
     force: bool,
     profile: bool,
     verbose: bool = False,
+    concat: bool = False,
 ) -> None:
     spec = h.source(source_id).spec
     failed = 0
-    for f in files:
+    groups: list[list[Path]] = [files] if concat else [[f] for f in files]
+    for group in groups:
+        label = " + ".join(f.name for f in group)
         try:
-            with ProgressView(f.name) as view:
+            with ProgressView(label) as view:
                 out = h.upload(
                     source_id,
-                    f,
+                    group,
                     options=opts,
                     period=period,
                     overlap_policy=overlap,
@@ -355,10 +389,10 @@ def _upload_files(
                     progress=view,
                 )
         except AgenError as e:
-            typer.echo(f"{f.name}: ошибка — {e}", err=True)
+            typer.echo(f"{label}: ошибка — {e}", err=True)
             failed += 1
             continue
-        _print_upload(out, verbose)
+        _print_upload(out, verbose, spec, period is not None)
     if failed:
         raise typer.Exit(1)
 
@@ -377,6 +411,14 @@ def upload_add(
         bool, typer.Option(help="Принять загрузку с нераспознанными значениями (они станут пустыми)")
     ] = False,
     force: Annotated[bool, typer.Option(help="Загрузить файл, даже если он уже загружен")] = False,
+    concat: Annotated[
+        bool,
+        typer.Option(
+            "--concat",
+            help="Файлы — части одной выгрузки (например, выгрузка за месяц в нескольких файлах): "
+            "склеить их по порядку в одну загрузку",
+        ),
+    ] = False,
     no_profile: Annotated[bool, typer.Option("--no-profile", help="Не считать точный профиль столбцов")] = False,
     encoding: Annotated[str | None, typer.Option()] = None,
     delimiter: Annotated[str | None, typer.Option()] = None,
@@ -404,6 +446,7 @@ def upload_add(
             force,
             not no_profile,
             verbose,
+            concat,
         )
 
 
@@ -551,9 +594,21 @@ def print_coverage(rep: CoverageReport) -> None:
         line = "    " + " ".join(f"{c.period.key} {CELL[c.state]}" for c in rep.cells[:60])
         typer.echo(line + (" …" if len(rep.cells) > 60 else ""))
     if rep.gaps:
-        typer.echo("  Пропуски: " + ", ".join(f"{g.start} … {g.end_exclusive}" for g in rep.gaps))
+        typer.echo("  Пропуски: " + ", ".join(_span_text(g, rep.unit) for g in rep.gaps))
     if rep.overlaps:
-        typer.echo("  Наложения: " + ", ".join(f"{g.start} … {g.end_exclusive}" for g in rep.overlaps))
+        typer.echo("  Наложения: " + ", ".join(_span_text(g, rep.unit) for g in rep.overlaps))
+
+
+def _span_text(span: DateSpan, unit: PeriodUnit) -> str:
+    """Отрезок по-человечески: «2026-02 … 2026-03», если он из целых единиц шкалы,
+    иначе первый и последний день."""
+    assert span.start is not None
+    last = span.end_exclusive - timedelta(days=1)
+    if unit in (PeriodUnit.MONTH, PeriodUnit.QUARTER, PeriodUnit.YEAR):
+        a, b = Period.containing(span.start, unit), Period.containing(last, unit)
+        if a.start == span.start and b.end_exclusive == span.end_exclusive:
+            return a.key if a == b else f"{a.key} … {b.key}"
+    return span.start.isoformat() if span.start == last else f"{span.start} … {last}"
 
 
 def history(

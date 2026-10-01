@@ -37,6 +37,7 @@ from autogenerator.contracts import (
     IssueLevel,
     OverlapPolicy,
     Period,
+    PeriodFrom,
     PeriodUnit,
     ProgressCallback,
     ReadOptions,
@@ -159,9 +160,13 @@ class Home:
         period_type: PeriodUnit | None = None,
         options: ReadOptions | None = None,
         fmt: str | None = None,
+        period_from: PeriodFrom | None = None,
     ) -> tuple[SourceSpec, SchemaSnapshot]:
-        """Черновик источника по выгрузке (не сохраняется)."""
-        return worker.draft_source(path, source_id, name, period_column, period_type, options, fmt)
+        """Черновик источника по выгрузке (не сохраняется). ``period_from=upload`` —
+        выгрузка-срез: период задаётся при загрузке; пусто — определить по файлу."""
+        return worker.draft_source(
+            path, source_id, name, period_column, period_type, options, fmt, period_from=period_from
+        )
 
     def create_source(self, spec: SourceSpec, comment: str = "") -> SourceRecord:
         self._need_write()
@@ -218,7 +223,7 @@ class Home:
     def upload(
         self,
         source_id: str,
-        path: str | Path,
+        path: str | Path | Sequence[str | Path],
         *,
         options: ReadOptions | None = None,
         period: Period | None = None,
@@ -233,7 +238,9 @@ class Home:
     ) -> UploadOutcome:
         """Загрузить файл в историю источника.
 
-        Тот же файл (по SHA-256) второй раз не загружается без ``force``. Если у источника
+        ``path`` — файл или список файлов одной выгрузки (выгрузка из нескольких частей):
+        они склеиваются в одну загрузку по порядку. Тот же файл или тот же набор файлов
+        (по SHA-256) второй раз не загружается без ``force``. Если у источника
         правило «ask» и период пересекается с прежними загрузками, правило берётся из
         ``overlap_policy`` или спрашивается через ``choose_policy``. Загрузка с ошибками
         приведения записывается со статусом «на проверке» и в историю не входит, пока её
@@ -242,29 +249,35 @@ class Home:
         self._need_write()
         src = self.store.get_source(source_id)
         spec = src.spec
-        p = Path(path)
-        if not p.is_file():
-            raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Файл не найден: {p}")
-        size = p.stat().st_size
+        files = [Path(path)] if isinstance(path, str | Path) else [Path(x) for x in path]
+        if not files:
+            raise AgenError(ErrorCode.FILE_NOT_FOUND, "Не указан файл выгрузки")
+        for f in files:
+            if not f.is_file():
+                raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Файл не найден: {f}")
+        p = files[0]
+        label = " + ".join(f.name for f in files)
+        size = sum(f.stat().st_size for f in files)
         free = self.folder.free_bytes()
         if free < DISK_FACTOR * size:
             raise AgenError(
                 ErrorCode.DISK_SPACE,
                 f"Мало места на диске папки данных: свободно {free / 2**30:.1f} ГБ, "
-                f"для загрузки {p.name} нужно около {DISK_FACTOR * size / 2**30:.1f} ГБ",
+                f"для загрузки {label} нужно около {DISK_FACTOR * size / 2**30:.1f} ГБ",
             )
         if overlap_policy == OverlapPolicy.ASK:
             raise AgenError(ErrorCode.SPEC_INVALID, "Для загрузки выберите конкретное правило, а не «ask»")
         if overlap_policy == OverlapPolicy.MERGE_DEDUPE and not spec.keys:
             raise AgenError(ErrorCode.SPEC_INVALID, f"Для merge_dedupe у источника «{spec.id}» нужны ключи (keys)")
-        sha = file_sha256(p, progress)
+        shas = [file_sha256(f, progress) for f in files]
+        sha = shas[0] if len(shas) == 1 else hashlib.sha256("\n".join(shas).encode()).hexdigest()
         same = [u for u in self.store.find_uploads(sha) if u.source_id == spec.id]
         if same and not force:
             u = same[-1]
+            what = "Этот файл уже загружен" if len(files) == 1 else "Эти файлы уже загружены"
             raise AgenError(
                 ErrorCode.ALREADY_EXISTS,
-                f"Этот файл уже загружен: #{u.seq} {u.original_name} ({u.period.key}, "
-                f"{u.uploaded_at.astimezone():%d.%m.%Y %H:%M})",
+                f"{what}: #{u.seq} {u.original_name} ({u.period.key}, {u.uploaded_at.astimezone():%d.%m.%Y %H:%M})",
                 hint="Загрузить ещё раз: --force.",
             )
 
@@ -274,6 +287,7 @@ class Home:
         req = IngestRequest(
             source=spec,
             path=str(p.resolve()),
+            parts=[str(f.resolve()) for f in files[1:]],
             upload_id=upload_id,
             upload_seq=seq,
             out_dir=out_dir,
@@ -307,7 +321,7 @@ class Home:
                         Issue(
                             level=IssueLevel.WARNING,
                             node=f"source:{spec.id}",
-                            message=f"{p.name}: период {res.period.key} уже загружен; строки добавятся к прежним — "
+                            message=f"{label}: период {res.period.key} уже загружен; строки добавятся к прежним — "
                             "проверьте, нет ли двойного учёта",
                         )
                     )
@@ -320,7 +334,7 @@ class Home:
                 source_id=spec.id,
                 seq=seq,
                 source_version=src.version,
-                original_name=p.name,
+                original_name=label,
                 sha256=sha,
                 size=size,
                 format=res.snapshot.format,

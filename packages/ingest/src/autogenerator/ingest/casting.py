@@ -33,10 +33,12 @@ DATETIME_FORMATS = [
     "%Y-%m-%d %H:%M:%S%.f",
     "%Y-%m-%dT%H:%M:%S%.f",
 ]
-BOOL_TRUE = ["да", "true", "yes", "истина", "1", "д", "y"]
-BOOL_FALSE = ["нет", "false", "no", "ложь", "0", "н", "n"]
+BOOL_TRUE = ["да", "true", "yes", "истина", "1", "д", "y", "t"]
+BOOL_FALSE = ["нет", "false", "no", "ложь", "0", "н", "n", "f"]
 # При выводе типа «1» и «0» — это числа, а не логические значения.
 BOOL_WORDS = [v for v in BOOL_TRUE + BOOL_FALSE if not v.isdigit()]
+CODE_MIN = 10**9
+"""Целые, у которых все значения не меньше этого (10 цифр и больше), считаются кодами."""
 
 NBSP, NNBSP, MINUS = " ", " ", "−"
 SPACES = [" ", NBSP, NNBSP, "\t"]
@@ -284,6 +286,10 @@ def infer_dtype_share(values: pl.Series) -> tuple[DType, str | None, float | Non
             return DType.STRING, None, None
         as_int = frame.select(parse_int(v)).to_series()
         if as_int.null_count() == as_float.null_count():
+            # Целые от 10 цифр (лицевые счета, номера договоров, ИНН) — коды, а не числа:
+            # в следующих строках у них бывают буквы («586A05832141»).
+            if bool((as_int.drop_nulls().abs() >= CODE_MIN).all()):
+                return DType.STRING, None, None
             return DType.INT, None, share
         return DType.FLOAT, None, share
 

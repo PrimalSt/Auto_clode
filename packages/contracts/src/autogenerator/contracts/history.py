@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from .periods import DateSpan, Period, PeriodUnit
 from .snapshot import UploadStatus
-from .sources import DType, OverlapPolicy
+from .sources import DType, OverlapPolicy, PeriodFrom, SourceSpec
 
 if TYPE_CHECKING:
     import polars as pl
@@ -41,10 +41,25 @@ class HistoryManifest(BaseModel):
     source_version: int = 1
     period_column: str
     period_type: PeriodUnit
+    period_from: PeriodFrom = PeriodFrom.COLUMN
     overlap_policy: OverlapPolicy
     keys: list[str] = Field(default_factory=list)
     columns: dict[str, DType] = Field(description="id столбца → тип в источнике")
     uploads: list[UploadRef] = Field(default_factory=list)
+
+    @classmethod
+    def for_source(cls, spec: SourceSpec, uploads: list[UploadRef] | None = None) -> HistoryManifest:
+        return cls(
+            source_id=spec.id,
+            source_version=spec.version,
+            period_column=spec.period_column,
+            period_type=spec.period_type,
+            period_from=spec.period_from,
+            overlap_policy=spec.overlap_policy,
+            keys=spec.keys,
+            columns=spec.dtypes,
+            uploads=uploads or [],
+        )
 
     @property
     def active_uploads(self) -> list[UploadRef]:

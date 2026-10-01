@@ -67,7 +67,7 @@ from .snapshot import (
     UploadStatus,
     ValueCount,
 )
-from .sources import ColumnSpec, DType, OverlapPolicy, ReadOptions, SourceSpec
+from .sources import ColumnSpec, DType, OverlapPolicy, PeriodFrom, ReadOptions, SourceSpec
 from .storage import (
     DEFAULT_WORKSPACE,
     BlobStore,
@@ -135,6 +135,7 @@ __all__ = [
     "OverlapPolicy",
     "ParamsPlugin",
     "Period",
+    "PeriodFrom",
     "PeriodUnit",
     "PlaceholderInfo",
     "Plugin",

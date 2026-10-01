@@ -20,6 +20,7 @@ from autogenerator.contracts import (
     HistoryManifest,
     OverlapPolicy,
     Period,
+    PeriodFrom,
     PeriodUnit,
     UploadRef,
 )
@@ -94,10 +95,20 @@ def _bound(value: date, dtype: DType) -> pl.Expr:
     return pl.lit(value, dtype=pl.Date())
 
 
-def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None) -> list[str]:
-    """Файлы загрузки, пропуская месяцы вне границ: раскладка по месяцам для этого и нужна."""
+def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None, by_upload: bool = False) -> list[str]:
+    """Файлы загрузки, пропуская месяцы вне границ: раскладка по месяцам для этого и нужна.
+
+    ``by_upload`` — период задаётся при загрузке: все строки в периоде загрузки, и загрузка
+    берётся или пропускается целиком (папка месяца могла устареть после правки периода).
+    """
     root = Path(up.uri)
     files: list[str] = []
+    if by_upload:
+        if (lower is not None and up.period.end_exclusive <= lower) or (
+            upper_exclusive is not None and up.period.start >= upper_exclusive
+        ):
+            return []
+        return [str(f) for f in sorted(root.glob("month=*/*.parquet"))]
     lo = lower.strftime("%Y-%m") if lower else None
     hi = upper_exclusive.strftime("%Y-%m") if upper_exclusive else None
     for d in sorted(root.glob("month=*")):
@@ -116,7 +127,8 @@ def _month_files(up: UploadRef, lower: date | None, upper_exclusive: date | None
 def _scan_upload(
     manifest: HistoryManifest, up: UploadRef, lower: date | None, upper_exclusive: date | None
 ) -> pl.LazyFrame | None:
-    files = _month_files(up, lower, upper_exclusive)
+    by_upload = manifest.period_from == PeriodFrom.UPLOAD
+    files = _month_files(up, lower, upper_exclusive, by_upload)
     if not files:
         return None
     lf = pl.scan_parquet(files, hive_partitioning=False)
@@ -124,7 +136,10 @@ def _scan_upload(
     exprs = []
     for cid, dtype in manifest.columns.items():
         target = _POLARS_TYPES[dtype]
-        if cid in present:
+        if by_upload and cid == manifest.period_column:
+            # Период задан при загрузке и мог быть поправлен позже: берём его из метаданных.
+            exprs.append(_bound(up.period.start, dtype).cast(target).alias(cid))
+        elif cid in present:
             # Тип столбца могли поменять после загрузки: приводим при чтении, файлы не переписываем.
             exprs.append(pl.col(cid).cast(target, strict=False))
         else:

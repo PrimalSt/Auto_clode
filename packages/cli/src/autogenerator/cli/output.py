@@ -116,8 +116,10 @@ class ProgressView:
 
 
 def _short(v: str | None, width: int = 24) -> str:
+    """Значение в одну строку: переносы и лишние пробелы схлопываются, длинное обрезается."""
     if v is None:
         return ""
+    v = " ".join(v.split())
     return v if len(v) <= width else v[: width - 1] + "…"
 
 
@@ -155,7 +157,8 @@ def print_snapshot(file: Path, snap: SchemaSnapshot, preview: int = 0) -> None:
     for c in snap.columns:
         fmt = f" ({c.format})" if c.format else ""
         share = f" {c.parsed_share:.1%}" if c.parsed_share is not None and c.parsed_share < 1 else ""
-        typer.echo(f"  {c.source_name:<{width}}{c.dtype.value:<9}{fmt + share:<22} например: {', '.join(c.sample[:3])}")
+        examples = ", ".join(_short(v, 40) for v in c.sample[:3])
+        typer.echo(f"  {c.source_name:<{width}}{c.dtype.value:<9}{fmt + share:<22} например: {examples}")
     profiles = {c.source_name: c.profile for c in snap.columns if c.profile is not None}
     print_profile(profiles)
     for n in snap.notes:

@@ -6,6 +6,7 @@ import pytest
 
 from autogenerator.contracts import AgenError, DType, ErrorCode, SourceSpec, UploadStatus
 from autogenerator.ingest import (
+    FilePart,
     header_snapshot,
     inspect_file,
     profile_frame,
@@ -202,3 +203,50 @@ def test_progress_and_cancel(tmp_path: Path, registry, jsonl):
     assert err.value.code == ErrorCode.CANCELLED
     # После отмены не остаётся ни загрузки, ни временной папки.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.jsonl", "ok"]
+
+
+def test_parts_of_one_export_become_one_upload(tmp_path: Path, registry, jsonl):
+    """Выгрузка из двух файлов: столбцы во втором в другом порядке, строки нумеруются
+    сквозь оба файла, строки с ошибками — по файлу в папке rejects."""
+    a = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.03.2026", "1"], ["02.03.2026", "2"]])
+    b = jsonl(tmp_path / "b.jsonl", ["Сумма", "Дата"], [["3", "03.03.2026"], ["сто", "04.03.2026"]])
+    res = write_upload(
+        a,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        more=[FilePart(b, {"Сумма": "amount", "Дата": "date"})],
+    )
+    t = pl.from_arrow(read_upload_table(res.data_uri))
+    assert t["_row"].to_list() == [1, 2, 3, 4]
+    assert t["amount"].to_list() == [1.0, 2.0, 3.0, None]
+    assert (res.rows, res.period_min, res.period_max) == (4, date(2026, 3, 1), date(2026, 3, 4))
+    rejects = pl.read_parquet(res.rejects_uri)
+    assert res.rejects_uri.endswith("/rejects")
+    assert rejects["_file"].to_list() == ["b.jsonl"] and rejects["_row"].to_list() == [4]
+
+
+def test_fixed_period_for_snapshot_exports(tmp_path: Path, registry, jsonl):
+    source = SourceSpec(
+        id="accounts",
+        name="Учётные записи",
+        period_column="period",
+        period_from="upload",
+        columns=[{"id": "period", "name": "Период загрузки", "dtype": "date"}, {"id": "login", "name": "Логин"}],
+    )
+    f = jsonl(tmp_path / "a.jsonl", ["Логин"], [["a"], ["b"]])
+    res = write_upload(
+        f,
+        registry,
+        source=source,
+        mapping={"Логин": "login"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        fixed_period=date(2026, 1, 1),
+    )
+    assert res.months == ["2026-01"] and res.period_min == res.period_max == date(2026, 1, 1)
+    assert pl.from_arrow(read_upload_table(res.data_uri))["period"].to_list() == [date(2026, 1, 1)] * 2

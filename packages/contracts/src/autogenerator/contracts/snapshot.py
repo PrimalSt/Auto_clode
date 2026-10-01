@@ -86,7 +86,14 @@ class ReconcileResult(BaseModel):
         default_factory=list, description="id столбцов, которых нет, но сценарию они не нужны"
     )
     unmapped_file_columns: list[str] = Field(default_factory=list, description="Столбцы файла, которых нет в источнике")
-    messages: list[str] = Field(default_factory=list)
+    by_pattern: dict[str, str] = Field(
+        default_factory=dict,
+        description="Столбцы файла, найденные по названию с другим месяцем: название в файле → название в источнике",
+    )
+    messages: list[str] = Field(default_factory=list, description="Сведения о сверке")
+    warnings: list[str] = Field(
+        default_factory=list, description="То, что стоит проверить: столбцы без пары, несколько подходящих столбцов"
+    )
 
 
 class CastIssue(BaseModel):

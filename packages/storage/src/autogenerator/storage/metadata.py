@@ -284,16 +284,7 @@ class SqliteMetadataStore:
             )
             for u in self.list_uploads(source_id)
         ]
-        return HistoryManifest(
-            source_id=spec.id,
-            source_version=spec.version,
-            period_column=spec.period_column,
-            period_type=spec.period_type,
-            overlap_policy=spec.overlap_policy,
-            keys=spec.keys,
-            columns=spec.dtypes,
-            uploads=refs,
-        )
+        return HistoryManifest.for_source(spec, refs)
 
 
 def _pragmas(dbapi_conn: Any, _record: Any) -> None:

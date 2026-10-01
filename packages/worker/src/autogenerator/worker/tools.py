@@ -10,6 +10,7 @@ from autogenerator.contracts import (
     CoverageReport,
     HistoryManifest,
     Period,
+    PeriodFrom,
     PluginManifest,
     ReadOptions,
     ScenarioSpec,
@@ -62,6 +63,8 @@ def export_history(manifest: HistoryManifest, out: str | Path, columns: list[str
 def rows_outside(data_uri: str, source: SourceSpec, period: Period) -> int:
     from autogenerator.history import rows_outside as _outside
 
+    if source.period_from == PeriodFrom.UPLOAD:
+        return 0  # все строки — в периоде загрузки по определению
     pc = source.period_column
     return _outside(data_uri, pc, source.column(pc).dtype, period)
 

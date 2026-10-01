@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from itertools import pairwise
 from pathlib import Path
@@ -20,7 +21,7 @@ from autogenerator.contracts import (
     PeriodUnit,
     UploadRef,
 )
-from autogenerator.contracts.periods import unit_shift, unit_start
+from autogenerator.contracts.periods import month_of_word, unit_shift, unit_start
 
 from .view import _bound, coverage
 
@@ -131,3 +132,36 @@ def rows_outside(data_uri: str, period_column: str, dtype: DType, period: Period
     inside = (col >= _bound(period.start, dtype)) & (col < _bound(period.end_exclusive, dtype))
     lf = pl.scan_parquet(files, hive_partitioning=False)
     return int(lf.select((col.is_not_null() & ~inside).sum()).collect().item())
+
+
+_YEAR_MONTH = re.compile(r"(?<!\d)(20\d\d)[-_. ]?(0[1-9]|1[0-2])(?!\d)")
+_MONTH_YEAR = re.compile(r"(?<!\d)(0[1-9]|1[0-2])[-_. ](20\d\d)(?!\d)")
+_YEAR = re.compile(r"(?<!\d)(20\d\d)(?!\d)")
+
+
+def period_from_name(name: str, unit: PeriodUnit = PeriodUnit.MONTH, today: date | None = None) -> Period | None:
+    """Период по имени файла: «Продажи_2026-01.csv», «01.2026», «Jan_2026», «январь»,
+    «noyabr». Если года в имени нет — последний такой месяц не позже текущего (выгрузки
+    делают за прошедшие месяцы). Для типов «день» и «неделя» и при нескольких разных
+    месяцах в имени — ``None``."""
+    if unit not in (PeriodUnit.MONTH, PeriodUnit.QUARTER, PeriodUnit.YEAR):
+        return None
+    stem = Path(name).stem
+    year: int | None = None
+    month: int | None = None
+    if m := _YEAR_MONTH.search(stem):
+        year, month = int(m.group(1)), int(m.group(2))
+    elif m := _MONTH_YEAR.search(stem):
+        month, year = int(m.group(1)), int(m.group(2))
+    else:
+        found = {n for t in re.findall(r"[^\W\d_]+", stem) if (n := month_of_word(t))}
+        if len(found) != 1:
+            return None
+        month = found.pop()
+        years = {int(y) for y in _YEAR.findall(stem)}
+        if len(years) == 1:
+            year = years.pop()
+        else:
+            today = today or date.today()
+            year = today.year if month <= today.month else today.year - 1
+    return Period.containing(date(year, month, 1), unit)

@@ -5,10 +5,11 @@
 from .casting import CastColumn, cast_expr, cast_frame, infer_dtype
 from .profile import profile_frame, profile_upload
 from .reading import choose_reader, header_snapshot, inspect_file, read_options
-from .writing import read_upload_table, write_upload
+from .writing import FilePart, read_upload_table, write_upload
 
 __all__ = [
     "CastColumn",
+    "FilePart",
     "cast_expr",
     "cast_frame",
     "choose_reader",

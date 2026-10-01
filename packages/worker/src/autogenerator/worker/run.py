@@ -137,15 +137,7 @@ def _ingest_input(
     from .ingest_job import ingest_upload
 
     node = f"input:{input_id}"
-    manifest = HistoryManifest(
-        source_id=source.id,
-        source_version=source.version,
-        period_column=source.period_column,
-        period_type=source.period_type,
-        overlap_policy=source.overlap_policy,
-        keys=source.keys,
-        columns=source.dtypes,
-    )
+    manifest = HistoryManifest.for_source(source)
     log: list[dict[str, Any]] = []
     for seq, f in enumerate(files, start=1):
         path = Path(f)

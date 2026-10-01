@@ -11,6 +11,7 @@ from autogenerator.contracts import (
     HistoryManifest,
     OverlapPolicy,
     Period,
+    PeriodFrom,
     PeriodUnit,
     UploadRef,
     UploadStatus,
@@ -22,6 +23,7 @@ from autogenerator.history import (
     guess_period_type,
     history_view,
     overlapping_uploads,
+    period_from_name,
     rows_outside,
     upload_period,
 )
@@ -218,3 +220,40 @@ def test_rows_outside(uploads):
     assert rows_outside(jan.uri, "date", "date", Period.parse("2026-01")) == 0
     # Строка без даты не считается «вне периода»: о ней отдельное предупреждение.
     assert rows_outside(jan.uri, "date", "date", Period.parse("2026-01-01..2026-01-10")) == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "key"),
+    [
+        ("Продажи_2026-01.csv", "2026-01"),
+        ("sales_01.2026.csv", "2026-01"),
+        ("выгрузка_202603.xlsx", "2026-03"),
+        ("отчёт январь 2025.xlsx", "2025-01"),
+        # Без года — последний такой месяц не позже сегодняшнего (сегодня — октябрь 2026).
+        ("Jan_for_report.xlsx", "2026-01"),
+        ("1_1b9v4_Obraschaemost_B2B_noyabr.xlsx", "2025-11"),
+        ("ноябрь-январь.xlsx", None),
+        ("data.csv", None),
+    ],
+)
+def test_period_from_name(name, key):
+    p = period_from_name(name, PeriodUnit.MONTH, today=date(2026, 10, 1))
+    assert (p.key if p else None) == key
+
+
+def test_period_from_name_by_unit():
+    assert period_from_name("2026-02.csv", PeriodUnit.QUARTER).key == "2026-Q1"
+    assert period_from_name("2026-02.csv", PeriodUnit.DAY) is None
+
+
+def test_period_set_at_upload_comes_from_metadata(tmp_path: Path):
+    """Источник-срез: столбец периода берётся из периода загрузки, поэтому правка периода
+    после загрузки сразу видна в истории, а файлы не переписываются."""
+    jan = make_upload(tmp_path, 1, [("a", date(2026, 1, 1), 1), ("b", date(2026, 1, 1), 2)], "2026-01")
+    apr = make_upload(tmp_path, 2, [("a", date(2026, 4, 1), 3)], "2026-04")
+    apr = apr.model_copy(update={"period": Period.parse("2026-03")})  # период поправили после загрузки
+    m = manifest(OverlapPolicy.REPLACE_PERIOD, [jan, apr], period_from=PeriodFrom.UPLOAD)
+    df = history_view(m).collect().sort("_upload_seq")
+    assert df["date"].to_list() == [date(2026, 1, 1), date(2026, 1, 1), date(2026, 3, 1)]
+    assert history_view(m, lower=date(2026, 3, 1)).collect().height == 1
+    assert history_view(m, upper_exclusive=date(2026, 3, 1)).collect().height == 2

@@ -42,6 +42,10 @@ class IngestRequest(BaseModel):
 
     source: SourceSpec
     path: str
+    parts: list[str] = Field(
+        default_factory=list,
+        description="Ещё файлы этой же выгрузки (выгрузка из нескольких частей): склеиваются с path в одну загрузку",
+    )
     upload_id: str
     upload_seq: int
     out_dir: str = Field(description="Папка загрузки; пишется атомарно, после сбоя не остаётся половины")
@@ -53,6 +57,10 @@ class IngestRequest(BaseModel):
     )
     overlap_policy: OverlapPolicy | None = Field(None, description="Выбор для источника с правилом «ask»")
     profile: bool = Field(True, description="Посчитать точный профиль столбцов по записанной загрузке")
+
+    @property
+    def files(self) -> list[str]:
+        return [self.path, *self.parts]
 
 
 class IngestResult(BaseModel):

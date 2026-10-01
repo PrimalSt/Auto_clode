@@ -1,10 +1,20 @@
+from datetime import date
 from pathlib import Path
 
 import polars as pl
 import pytest
 
 from autogenerator.api import Home, run
-from autogenerator.contracts import AgenError, ErrorCode, OverlapPolicy, Period, PeriodUnit, SourceSpec, UploadStatus
+from autogenerator.contracts import (
+    AgenError,
+    ErrorCode,
+    OverlapPolicy,
+    Period,
+    PeriodFrom,
+    PeriodUnit,
+    SourceSpec,
+    UploadStatus,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "examples" / "sales"
@@ -138,3 +148,32 @@ def test_run_takes_history_from_home(tmp_path: Path):
     assert sorted(res.from_home) == ["plan", "sales"] and res.period is not None and res.period.key == "2026-02"
     files = run(EXAMPLE / "scenario.yaml", home=tmp_path / "home", use_home=False, output=tmp_path / "f.pptx")
     assert files.from_home == [] and files.period is not None and files.period.key == "2026-03"
+
+
+def test_parts_of_one_export_and_duplicate_set(home: Home, tmp_path: Path):
+    a = csv(tmp_path / "часть1.csv", ["01.03.2026;Москва;1", "02.03.2026;Казань;2"])
+    b = csv(tmp_path / "часть2.csv", ["03.03.2026;Москва;3"])
+    spec, _ = home.draft_source(a, "s")
+    home.create_source(spec)
+    out = home.upload("s", [a, b])
+    r = out.record
+    assert (r.seq, r.rows, r.period.key, r.original_name) == (1, 3, "2026-03", "часть1.csv + часть2.csv")
+    with pytest.raises(AgenError) as e:
+        home.upload("s", [a, b])
+    assert e.value.code == ErrorCode.ALREADY_EXISTS and "Эти файлы уже загружены" in str(e.value)
+    # Тот же файл отдельно — другая загрузка, его можно загрузить.
+    assert home.upload("s", a, overlap_policy=OverlapPolicy.REPLACE_PERIOD).record.seq == 2
+
+
+def test_snapshot_period_can_be_fixed_after_upload(home: Home, tmp_path: Path):
+    f = tmp_path / "Учётки_янв_2026.csv"
+    f.write_text("Логин;Дата создания УЗ\na;2016-12-30\nb;2025-09-26\n", encoding="utf-8")
+    spec, _ = home.draft_source(f, "acc")
+    assert spec.period_from == PeriodFrom.UPLOAD
+    home.create_source(spec)
+    up = home.upload("acc", f).record
+    assert up.period.key == "2026-01"
+    home.set_upload_period(up.id, Period.parse("2026-02"))
+    out = tmp_path / "h.parquet"
+    assert home.export_history("acc", out) == 2
+    assert set(pl.read_parquet(out)["period"].to_list()) == {date(2026, 2, 1)}

@@ -12,11 +12,13 @@ from autogenerator.contracts import (
     DType,
     ErrorCode,
     OverlapPolicy,
+    PeriodFrom,
     PeriodUnit,
     ReadOptions,
     SchemaSnapshot,
     SourceSpec,
 )
+from autogenerator.contracts.periods import month_of_word
 from autogenerator.contracts.sources import ID_PATTERN
 
 from .reconcile import normalize_name
@@ -95,10 +97,15 @@ _TRANSLIT = str.maketrans(
 
 MAX_ID = 40
 PERIOD_HINTS = ("дата", "период", "date", "месяц")
+UPLOAD_PERIOD_NAME = "Период загрузки"
+"""Название столбца периода, который заполняется при загрузке (в файле его нет)."""
 
 
 def _word_id(word: str) -> tuple[str, bool]:
-    """id слова и признак «слово не в начальной форме» (обычно родительный падеж)."""
+    """id слова и признак «слово не в начальной форме» (обычно родительный падеж).
+    Названия месяцев становятся ``month``: id не должен меняться от выгрузки к выгрузке."""
+    if month_of_word(word):
+        return "month", False
     if word in WORDS:
         return WORDS[word], False
     for key, value in WORDS.items():
@@ -144,17 +151,22 @@ def draft_source(
     period_column: str | None = None,
     period_type: PeriodUnit = PeriodUnit.MONTH,
     explicit: ReadOptions | None = None,
+    period_from: PeriodFrom = PeriodFrom.COLUMN,
 ) -> SourceSpec:
     """Черновик источника по снимку структуры.
 
     ``period_column`` — название столбца периода в файле; пусто — первый столбец с датами,
-    в названии которого есть «дата» или «период». ``explicit`` — параметры чтения, заданные
-    пользователем: они сохраняются как есть, а из найденных сохраняются кодировка и
-    разделитель (строка шапки и листы ищутся в каждом файле заново).
+    в названии которого есть «дата» или «период». ``period_from=upload`` — выгрузка-срез без
+    такого столбца: в источник добавляется столбец «Период загрузки», который заполняется
+    при загрузке. ``explicit`` — параметры чтения, заданные пользователем: они сохраняются
+    как есть, а из найденных сохраняются кодировка и разделитель (строка шапки и листы
+    ищутся в каждом файле заново).
     """
     taken: set[str] = set()
     columns: list[ColumnSpec] = []
     by_name: dict[str, ColumnSpec] = {}
+    if period_from == PeriodFrom.UPLOAD:
+        taken.add("period")
     for c in snapshot.columns:
         spec = ColumnSpec(
             id=suggest_id(c.source_name, taken),
@@ -164,7 +176,10 @@ def draft_source(
         )
         columns.append(spec)
         by_name[c.source_name] = spec
-    if period_column is not None:
+    if period_from == PeriodFrom.UPLOAD:
+        pspec = ColumnSpec(id="period", name=UPLOAD_PERIOD_NAME, dtype=DType.DATE)
+        columns.insert(0, pspec)
+    elif period_column is not None:
         if period_column not in by_name:
             raise AgenError(
                 ErrorCode.SPEC_INVALID,
@@ -192,6 +207,7 @@ def draft_source(
         options=options,
         period_column=pspec.id,
         period_type=period_type,
+        period_from=period_from,
         overlap_policy=OverlapPolicy.REPLACE_PERIOD,
         columns=columns,
     )

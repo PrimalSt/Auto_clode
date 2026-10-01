@@ -34,6 +34,17 @@ class OverlapPolicy(StrEnum):
     ASK = "ask"
 
 
+class PeriodFrom(StrEnum):
+    """Откуда берётся период строк выгрузки."""
+
+    COLUMN = "column"
+    """Из столбца с датами в файле (дата заказа, дата обращения)."""
+    UPLOAD = "upload"
+    """Из загрузки: выгрузка — срез на месяц без столбца с этим месяцем (например, список
+    учётных записей на конец месяца). Период берётся из имени файла или задаётся при
+    загрузке, а столбец периода заполняется началом периода у всех строк."""
+
+
 class ReadOptions(BaseModel):
     """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же.
 
@@ -107,6 +118,11 @@ class SourceSpec(BaseModel):
     options: ReadOptions = Field(default_factory=ReadOptions)
     period_column: str
     period_type: PeriodUnit = PeriodUnit.MONTH
+    period_from: PeriodFrom = Field(
+        PeriodFrom.COLUMN,
+        description="column — период по датам столбца period_column; upload — период задаётся при загрузке "
+        "(имя файла или --period), столбец period_column в файле не ищется и заполняется началом периода",
+    )
     overlap_policy: OverlapPolicy = OverlapPolicy.REPLACE_PERIOD
     keys: list[str] = Field(default_factory=list)
     keep_originals: bool = Field(
@@ -131,6 +147,8 @@ class SourceSpec(BaseModel):
             raise ValueError(f"Столбец периода «{self.period_column}» не описан в columns")
         if self.column(self.period_column).dtype not in (DType.DATE, DType.DATETIME):
             raise ValueError(f"Столбец периода «{self.period_column}» должен иметь тип date или datetime")
+        if self.period_from == PeriodFrom.UPLOAD and self.period_type == PeriodUnit.RANGE:
+            raise ValueError("Период, который задаётся при загрузке, должен быть календарным: day, week, month…")
         missing_keys = [k for k in self.keys if k not in ids]
         if missing_keys:
             raise ValueError(f"Ключевые столбцы не описаны в columns: {', '.join(missing_keys)}")
@@ -145,3 +163,10 @@ class SourceSpec(BaseModel):
     @property
     def dtypes(self) -> dict[str, DType]:
         return {c.id: c.dtype for c in self.columns}
+
+    @property
+    def file_columns(self) -> list[ColumnSpec]:
+        """Столбцы, которые ищутся в файле: все, кроме столбца периода, заданного при загрузке."""
+        if self.period_from == PeriodFrom.UPLOAD:
+            return [c for c in self.columns if c.id != self.period_column]
+        return self.columns

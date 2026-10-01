@@ -210,3 +210,56 @@ class Period(BaseModel):
 
     def contains(self, d: date) -> bool:
         return self.start <= d < self.end_exclusive
+
+
+# --- Названия месяцев -------------------------------------------------------------------
+
+_MONTH_STEMS = (
+    "январ",
+    "феврал",
+    "март",
+    "апрел",
+    "ма",
+    "июн",
+    "июл",
+    "август",
+    "сентябр",
+    "октябр",
+    "ноябр",
+    "декабр",
+)
+_RU_ENDINGS = ("", "ь", "я", "е", "ем", "ём", "ю", "й", "а", "ом", "у")
+_MONTH_EXACT = {
+    **{w: i for i, ws in enumerate(
+        (
+            ("янв", "january", "jan", "yanvar", "yanvarya", "yanvare"),
+            ("фев", "февр", "february", "feb", "fevral", "fevralya", "fevrale"),
+            ("мар", "march", "mar", "mart", "marta", "marte"),
+            ("апр", "april", "apr", "aprel", "aprelya", "aprele"),
+            ("may", "mai", "maya", "mae"),
+            ("июн", "june", "jun", "iyun", "iyunya", "iyune"),
+            ("июл", "july", "jul", "iyul", "iyulya", "iyule"),
+            ("авг", "august", "aug", "avgust", "avgusta", "avguste"),
+            ("сен", "сент", "september", "sep", "sept", "sentyabr", "sentyabrya", "sentyabre"),
+            ("окт", "october", "oct", "oktyabr", "oktyabrya", "oktyabre"),
+            ("ноя", "нояб", "november", "nov", "noyabr", "noyabrya", "noyabre"),
+            ("дек", "december", "dec", "dekabr", "dekabrya", "dekabre"),
+        ),
+        start=1,
+    ) for w in ws},
+}  # fmt: skip
+
+
+def month_of_word(word: str) -> int | None:
+    """Номер месяца по слову: «январь», «января», «январе», «янв», «January», «Jan»,
+    транслит «yanvar», «noyabr». Иначе ``None``."""
+    w = word.lower().replace("ё", "е")
+    if w in _MONTH_EXACT:
+        return _MONTH_EXACT[w]
+    for i, stem in enumerate(_MONTH_STEMS, start=1):
+        if stem == "ма":
+            if w in ("май", "мая", "мае", "маем"):
+                return i
+        elif w.startswith(stem) and w[len(stem) :] in _RU_ENDINGS:
+            return i
+    return None
