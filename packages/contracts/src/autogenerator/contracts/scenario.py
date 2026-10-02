@@ -339,13 +339,31 @@ class MetricSpec(BaseModel):
         return out
 
 
+class ShapeRef(BaseModel):
+    """Фигура слайда-образца: адресуется по id (``cNvPr id``), имя — только подпись."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(description="id фигуры на слайде шаблона")
+    label: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_int(cls, value: Any) -> Any:
+        return {"id": value} if isinstance(value, int) else value
+
+
 class BlockSpec(_Extensible):
-    """Блок слайда. Всё, кроме общих полей, — параметры плагина блока."""
+    """Блок слайда. Всё, кроме общих полей, — параметры плагина блока.
+
+    На слайде из макета блок ставится в область ``slot``; на слайде-образце блок заполняет
+    готовую фигуру шаблона ``shape`` (график — ``chart_fill``, таблицу — ``table_fill``)."""
 
     type: str
     type_version: int = 1
     id: str | None = None
     slot: str | None = Field(None, description="Область макета: title, body, left, right, …")
+    shape: ShapeRef | None = Field(None, description="Фигура слайда-образца")
 
 
 class ExampleRef(BaseModel):
@@ -354,10 +372,21 @@ class ExampleRef(BaseModel):
     id: int = Field(description="sldId слайда шаблона")
     label: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _from_int(cls, value: Any) -> Any:
+        return {"id": value} if isinstance(value, int) else value
+
 
 class SlideSpec(BaseModel):
     """Слайд отчёта: из макета (``layout`` — роль макета) или слайд-образец шаблона
-    (``example``; появится на этапе M3)."""
+    (``example`` — id слайда шаблона).
+
+    ``markers`` — привязки меток слайда-образца: ``имя`` (все вхождения на слайде),
+    ``имя@фигура`` (вхождения в одной фигуре) или ``имя@фигура#номер`` (одно вхождение).
+    Привязки на уровне сценария (``ScenarioSpec.markers``) действуют на всю презентацию.
+    ``keep`` — фигуры шаблона (графики, таблицы), которые намеренно остаются как в шаблоне.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -367,11 +396,14 @@ class SlideSpec(BaseModel):
     enabled: bool = True
     markers: dict[str, Any] = Field(default_factory=dict)
     blocks: list[BlockSpec] = Field(default_factory=list)
+    keep: list[int] = Field(default_factory=list, description="id фигур, которые не заполняются")
 
     @model_validator(mode="after")
     def _check(self) -> SlideSpec:
         if (self.layout is None) == (self.example is None):
             raise ValueError("У слайда должен быть ровно один из layout или example")
+        if self.layout is not None and (self.markers or self.keep):
+            raise ValueError("markers и keep задаются только у слайда-образца (example)")
         return self
 
 
@@ -404,6 +436,9 @@ class ScenarioSpec(BaseModel):
     inputs: list[InputSpec]
     datasets: list[DatasetSpec] = Field(default_factory=list)
     metrics: list[MetricSpec] = Field(default_factory=list)
+    markers: dict[str, Any] = Field(
+        default_factory=dict, description="Привязки меток слайдов-образцов для всей презентации"
+    )
     slides: list[SlideSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")

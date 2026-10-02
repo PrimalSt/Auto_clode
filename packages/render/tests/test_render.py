@@ -101,7 +101,7 @@ def test_validation(theme, registry):
     assert any("Нет плагина block «nope»" in m for m in messages)
     assert any("нет показателя «missing»" in m for m in messages)
     assert any("нет области «left»" in m for m in messages)
-    assert any("M3" in m for m in messages)
+    assert any("нет слайда с id 256" in m for m in messages)
     assert any("параметры блока «echo»" in m and "text" in m for m in messages)
 
 

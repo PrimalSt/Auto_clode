@@ -6,6 +6,7 @@ from pptx import Presentation
 
 from autogenerator.contracts import AgenError, LayoutRole
 from autogenerator.theme import import_template
+from autogenerator.theme.importer import ZIP_RATIO_MIN_BYTES
 
 
 @pytest.fixture
@@ -35,13 +36,17 @@ def test_roles_and_slots(template: Path, tmp_path: Path):
     title_only = m.role("title_only")
     assert title_only.slot("body").geometry.y > title_only.slot("title").geometry.y
     assert title_only.slot("body").placeholder_idx is None
-    assert m.notes == []
+    # Финального макета в шаблоне по умолчанию нет: роль построена из титульного.
+    assert m.role("final").derived and m.role("final").layout_key == m.role("title").layout_key
+    assert m.notes == ["Роль «final» построена из макета «Title Slide»: финальный слайд на титульном макете"]
 
 
 def test_template_slides_and_markers(template: Path, tmp_path: Path):
     m = import_template(template, tmp_path / "out")
     [slide] = m.slides
-    assert slide.markers == ["Месяц", "Выручка"]
+    assert slide.marker_names == ["Месяц", "Выручка"]
+    box = slide.markers[1].shape_id
+    assert [m.key for m in slide.markers][1:] == [f"Выручка@{box}#1", f"Месяц@{box}#1"]
     assert slide.number == 1 and slide.slide_id >= 256
 
 
@@ -94,3 +99,13 @@ def test_not_a_pptx(tmp_path: Path):
         import_template(f, tmp_path / "out")
     with pytest.raises(AgenError, match="не найден"):
         import_template(tmp_path / "nope.pptx", tmp_path / "out")
+
+
+def test_zip_bomb_is_rejected(template: Path, tmp_path: Path):
+    bomb = tmp_path / "bomb.pptx"
+    with zipfile.ZipFile(template) as zin, zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            zout.writestr(item, zin.read(item.filename))
+        zout.writestr("ppt/media/zeros.bin", b"\0" * (ZIP_RATIO_MIN_BYTES + 1))
+    with pytest.raises(AgenError, match="zip-бомб"):
+        import_template(bomb, tmp_path / "out")
