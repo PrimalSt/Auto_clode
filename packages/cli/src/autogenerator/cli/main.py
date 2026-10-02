@@ -19,6 +19,7 @@ from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RunRes
 
 from .data import history, source_app, upload_app
 from .output import LEVEL_MARK, fail, home_option, print_snapshot, read_options_from, utf8_output
+from .theme import theme_app
 
 app = typer.Typer(
     name="agen",
@@ -30,6 +31,7 @@ app = typer.Typer(
 
 app.add_typer(source_app, name="source")
 app.add_typer(upload_app, name="upload")
+app.add_typer(theme_app, name="theme")
 app.command()(history)
 
 
@@ -230,7 +232,10 @@ def preview(
     scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
     target: Annotated[
         str,
-        typer.Argument(help="Что показать: вход (sales), вход после шага (sales/dedupe), набор или показатель"),
+        typer.Argument(
+            help="Что показать: вход (sales), вход после шага (sales/dedupe), набор (dataset:…), показатель "
+            "(metric:…) или слайд (slide:3 — пробная сборка одного слайда)"
+        ),
     ],
     sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
     data: Annotated[Path | None, typer.Option(help="Папка выгрузок: по подпапке на вход")] = None,
@@ -249,9 +254,35 @@ def preview(
     accept_cast_errors: Annotated[bool, typer.Option(help="Принять загрузки с нераспознанными значениями")] = False,
     no_home: Annotated[bool, typer.Option("--no-home", help="Не брать историю из папки данных")] = False,
     home: Annotated[Path | None, home_option] = None,
+    theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx (для slide:N)")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Файл .pptx пробной сборки (slide:N)")] = None,
+    image: Annotated[
+        Path | None,
+        typer.Option(help="Нарисовать слайд в .png (slide:N): PowerPoint, иначе LibreOffice"),
+    ] = None,
 ) -> None:
     """Превью узла сценария: первые строки и число строк до и после каждого шага, набор
-    данных или значение показателя. На больших данных превью входа — по выборке."""
+    данных или значение показателя. На больших данных превью входа — по выборке.
+
+    slide:N — пробная сборка одного слайда в .pptx (и картинка с --image): непривязанные и
+    пустые метки остаются в тексте и подсвечиваются."""
+    if target.startswith("slide:"):
+        _preview_slide(
+            scenario,
+            target,
+            sources,
+            data,
+            input,
+            period,
+            theme,
+            output,
+            image,
+            workdir,
+            accept_cast_errors,
+            home,
+            no_home,
+        )
+        return
     try:
         res = api.preview(
             scenario,
@@ -275,6 +306,52 @@ def preview(
     else:
         _print_preview(res, rows)
     if res.errors:
+        raise typer.Exit(1)
+
+
+def _preview_slide(
+    scenario: Path,
+    target: str,
+    sources: Path | None,
+    data: Path | None,
+    input: list[str] | None,
+    period: str | None,
+    theme: Path | None,
+    output: Path | None,
+    image: Path | None,
+    workdir: Path | None,
+    accept_cast_errors: bool,
+    home: Path | None,
+    no_home: bool,
+) -> None:
+    number = target.removeprefix("slide:")
+    if not number.isdigit() or int(number) < 1:
+        raise typer.BadParameter("slide:N — номер слайда сценария с единицы", param_hint="TARGET")
+    try:
+        res = api.preview_slide(
+            scenario,
+            int(number),
+            sources=sources,
+            inputs=_parse_inputs(input or []),
+            data_dir=data,
+            theme=theme,
+            period=period,
+            output=output,
+            image=image,
+            workdir=workdir,
+            accept_cast_errors=accept_cast_errors,
+            home=home,
+            use_home=False if no_home else None,
+        )
+    except AgenError as e:
+        _fail(e)
+        return
+    _print_result(res, verbose=False)
+    if res.image_path:
+        note = f" ({res.image_note})" if res.image_note else ""
+        typer.echo(f"Картинка: {res.image_path}{note}")
+    if not res.output_path:
+        typer.echo("Слайд не собран.", err=True)
         raise typer.Exit(1)
 
 

@@ -167,7 +167,8 @@ def text_frames(el: etree._Element) -> Iterator[tuple[etree._Element, tuple[int,
 
 
 def all_text(el: etree._Element) -> str:
-    return "\n".join("".join(t.text or "" for t in p.iter(f"{A}t")) for p in el.iter(f"{A}p"))
+    """Текст фигуры: абзацы через перенос строки, разрыв строки внутри абзаца — тоже перенос."""
+    return "\n".join(paragraph_segments(p)[0] for p in el.iter(f"{A}p"))
 
 
 # --- метки ----------------------------------------------------------------------------

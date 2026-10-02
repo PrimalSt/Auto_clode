@@ -2,7 +2,7 @@
 # Запуск из корня репозитория:  uv run agen run examples/sales/scenario.yaml
 # Превью любого узла:           uv run agen preview examples/sales/scenario.yaml dataset:plan_fact
 # Слайды — из макетов шаблона (layout) и готовые слайды шаблона (example): у них метки {{…}}
-# получают значения, графики и таблица — данные. Что есть в шаблоне: uv run agen theme show
+# получают значения, графики и таблица — данные. Что есть в шаблоне: uv run agen theme check
 # examples/templates/synthetic.pptx
 # Выгрузки берутся из data/<вход>/ по порядку имён; отчётный период по умолчанию —
 # последний месяц основного входа (март 2026).
@@ -122,7 +122,9 @@ slides:
   - example: 257
     markers:
       Выручка: { metric: revenue, scale: million, decimals: 1 }      # «{{Выручка}} млн ₽»
-      Прирост+: { metric: revenue_prev_change_pct, percent: true, sign: true }  # «%» уже в шаблоне
+      # «%» уже в шаблоне после метки, поэтому значение подставляется без своего «%». В отчёте
+      # за первый месяц истории прошлого месяца нет: метка остаётся пустой, а не останавливает сборку.
+      Прирост+: { metric: revenue_prev_change_pct, percent: true, sign: true, empty: blank }
       Доля: { metric: plan_done, percent: true, decimals: 0 }       # «{{Доля}}% плана выполнено»
     blocks:
       - type: chart_fill

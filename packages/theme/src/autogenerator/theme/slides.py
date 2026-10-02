@@ -25,6 +25,7 @@ from autogenerator.contracts.ooxml import (
     P,
     R,
     ShapeEl,
+    all_text,
     graphic_uri,
     iter_markers,
     iter_shapes,
@@ -350,7 +351,8 @@ def slide_info(slide: Any, number: int, slide_id: int, layout_key: str) -> Templ
     link_overlaid(charts)
     title = None
     if slide.shapes.title is not None and slide.shapes.title.has_text_frame:
-        title = slide.shapes.title.text_frame.text or None
+        # Разрыв строки python-pptx отдаёт как «\v»: заголовок — одной строкой.
+        title = " ".join(slide.shapes.title.text_frame.text.split()) or None
     if title is None:
         # Заголовок слайда-образца часто — обычная надпись вверху слайда: берём самую верхнюю.
         tops = [
@@ -359,7 +361,7 @@ def slide_info(slide: Any, number: int, slide_id: int, layout_key: str) -> Templ
             if sh.geometry is not None and sh.el.find(f"{P}txBody") is not None and not sh.in_group
         ]
         for _, sh in sorted(tops, key=lambda t: t[0]):
-            text = "".join(t.text or "" for t in sh.el.iter(f"{A}t")).strip()
+            text = " ".join(all_text(sh.el).split())
             if text:
                 title = text
                 break

@@ -252,7 +252,7 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     result.issues += plan.issues
     theme = import_template(req.theme, workdir / "theme")
     _dump(workdir / "theme" / "manifest.json", theme)
-    result.issues += validate_slides(scenario, registry, theme)
+    result.issues += validate_slides(scenario, registry, theme, preview=req.preview)
     if result.errors:
         return
 
@@ -266,12 +266,22 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     result.issues += engine_result.issues
     _save_engine_outputs(workdir / "engine" / "outputs", engine_result)
 
-    rendered = build_presentation(scenario, theme, engine_result, registry, output_path(req, period))
+    rendered = build_presentation(
+        scenario, theme, engine_result, registry, output_path(req, period), preview=req.preview, only=req.slide
+    )
     result.nodes += rendered.nodes
     result.issues += rendered.issues
     result.slides = rendered.slides
     result.output_path = rendered.output_path
     result.ok = rendered.output_path is not None and not result.errors
+    if req.image and rendered.output_path:
+        from .theme_jobs import slide_image
+
+        try:
+            result.image_note = slide_image(rendered.output_path, req.image)
+            result.image_path = req.image
+        except AgenError as e:
+            result.issues.append(Issue(level=IssueLevel.WARNING, code=str(e.code), message=str(e)))
 
 
 def _histories(

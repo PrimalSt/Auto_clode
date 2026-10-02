@@ -34,6 +34,7 @@ from autogenerator.contracts import (
     ScenarioSpec,
     SchemaSnapshot,
     SourceSpec,
+    ThemeManifest,
 )
 from autogenerator.contracts.yaml_io import load_model_list, load_yaml
 
@@ -137,6 +138,62 @@ def run(
         temp_dir=found.temp_dir,
     )
     return worker.run(req)
+
+
+def preview_slide(
+    scenario: str | Path | ScenarioSpec,
+    number: int,
+    *,
+    sources: str | Path | Sequence[SourceSpec] | None = None,
+    inputs: Mapping[str, Sequence[str | Path]] | None = None,
+    data_dir: str | Path | None = None,
+    theme: str | Path | None = None,
+    period: str | Period | None = None,
+    output: str | Path | None = None,
+    image: str | Path | None = None,
+    workdir: str | Path | None = None,
+    accept_cast_errors: bool = False,
+    home: str | Path | None = None,
+    use_home: bool | None = None,
+) -> RunResult:
+    """Превью слайда: пробная сборка одного слайда сценария (номер среди включённых, с
+    единицы). Непривязанные и пустые метки остаются в тексте и подсвечиваются, незаполненные
+    места — предупреждения. ``image`` — нарисовать слайд в .png (PowerPoint или LibreOffice)."""
+    sc, srcs, theme_path, base = _resolve(scenario, sources, theme)
+    found = _inputs(sc, srcs, base, inputs, data_dir, home, use_home)
+    req = RunRequest(
+        scenario=sc,
+        sources=found.sources,
+        inputs=found.files,
+        histories=found.histories,
+        theme=theme_path,
+        period=Period.parse(period) if isinstance(period, str) else period,
+        output=str(output or Path.cwd() / f"превью_слайда_{number}.pptx"),
+        workdir=str(workdir) if workdir else None,
+        accept_cast_errors=accept_cast_errors,
+        cache_dir=found.cache_dir,
+        temp_dir=found.temp_dir,
+        slide=number,
+        preview=True,
+        image=str(image) if image else None,
+    )
+    return worker.run(req)
+
+
+def check_theme(path: str | Path) -> ThemeManifest:
+    """Импорт и проверка шаблона .pptx без сохранения: роли макетов, слайды-образцы с
+    метками, графиками и таблицами, шрифты, отчёт проверки (F-410)."""
+    return worker.import_theme(path)
+
+
+def describe_theme(m: ThemeManifest, *, layouts: bool = False, verbose: bool = False, name: str | None = None) -> str:
+    """Отчёт о шаблоне текстом."""
+    return worker.describe_theme(m, layouts=layouts, verbose=verbose, name=name)
+
+
+def scaffold_theme(m: ThemeManifest, name: str | None = None) -> str:
+    """Заготовка слайдов сценария (YAML) по слайдам-образцам шаблона."""
+    return worker.scaffold_theme(m, name)
 
 
 @dataclass

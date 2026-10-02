@@ -17,7 +17,7 @@ def test_run_example(tmp_path: Path):
     assert r.exit_code == 0, r.output
     assert "Отчётный период: 2026-03" in r.output
     assert "Готово:" in r.output
-    assert len(Presentation(str(out)).slides) == 7
+    assert len(Presentation(str(out)).slides) == 11
 
 
 def test_run_with_explicit_inputs_and_period(tmp_path: Path):
@@ -103,3 +103,29 @@ def test_preview_unknown_node():
 def test_bad_input_argument():
     r = runner.invoke(app, ["run", str(SCENARIO), "-i", "sales.csv"])
     assert r.exit_code == 2
+
+
+TEMPLATE = ROOT / "examples" / "templates" / "synthetic.pptx"
+
+
+def test_theme_check_and_scaffold(tmp_path: Path):
+    r = runner.invoke(app, ["theme", "check", str(TEMPLATE)])
+    # В синтетическом шаблоне есть слайд «Черновик» с ошибками проверки — код выхода 1.
+    assert r.exit_code == 1, r.output
+    assert "Роли макетов:" in r.output and "[ошибка] слайд 7" in r.output
+    out = tmp_path / "slides.yaml"
+    r = runner.invoke(app, ["theme", "scaffold", str(TEMPLATE), "-o", str(out)])
+    assert r.exit_code == 0, r.output
+    text = out.read_text(encoding="utf-8")
+    assert "Месяц: period.month" in text and "type: chart_fill" in text and "type: table_fill" in text
+
+
+def test_preview_slide(tmp_path: Path):
+    out = tmp_path / "slide.pptx"
+    r = runner.invoke(app, ["preview", str(SCENARIO), "slide:2", "-o", str(out)])
+    assert r.exit_code == 0, r.output
+    prs = Presentation(str(out))
+    assert len(prs.slides) == 1
+    assert any("Итоги, март 2026" in sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
+    r = runner.invoke(app, ["preview", str(SCENARIO), "slide:99", "-o", str(out)])
+    assert r.exit_code != 0

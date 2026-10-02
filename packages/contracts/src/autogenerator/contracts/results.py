@@ -146,6 +146,8 @@ class RunResult(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict, description="Загрузки по входам")
     from_home: list[str] = Field(default_factory=list, description="Входы, чья история взята из папки данных")
+    image_path: str | None = Field(None, description="Картинка слайда (превью слайда)")
+    image_note: str | None = Field(None, description="Пометка к картинке: «приблизительно», если рисовал не PowerPoint")
     seconds: float = 0.0
 
     @property

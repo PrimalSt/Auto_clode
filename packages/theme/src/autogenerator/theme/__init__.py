@@ -3,5 +3,6 @@
 
 from .importer import import_template, make_working_copy
 from .report import describe
+from .scaffold import scaffold
 
-__all__ = ["describe", "import_template", "make_working_copy"]
+__all__ = ["describe", "import_template", "make_working_copy", "scaffold"]
