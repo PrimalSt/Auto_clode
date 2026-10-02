@@ -49,7 +49,7 @@ jobs:
       - name: Бенчмарк
         env:
           PYTHONUTF8: "1"
-        run: uv run python tools/bench_run.py --data "${{ runner.temp }}/bench-data" --report bench.md --check
+        run: uv run python tools/bench_run.py --data "${{ runner.temp }}/bench-data" --report bench.md --check --profile
       - name: Отчёт
         if: always()
         shell: bash

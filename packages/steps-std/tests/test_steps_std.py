@@ -188,14 +188,16 @@ def test_dedupe_keeps_row_from_latest_upload():
             ("b", None),
             ("c", -5.0),
         ]
-    assert "QUALIFY row_number()" in ctx.queries[0]
+    assert "GROUP BY" in ctx.queries[0]
     assert not DedupeStep.row_local
-    first = run(DedupeStep(), by=["order_no"], keep="first")
-    assert first.filter(pl.col("order_no") == "a")["amount"].item() == 30.0
-    # Порядок строк не меняется.
-    assert first["order_no"].to_list() == ["b", "a", "c"]
-    top = run(DedupeStep(), by=["order_no"], keep="min", column="amount")
-    assert top.filter(pl.col("order_no") == "a")["amount"].item() == 10.0
+    for ctx in (Ctx(), Ctx(large=True)):
+        first = run(DedupeStep(), ctx, by=["order_no"], keep="first")
+        assert first.filter(pl.col("order_no") == "a")["amount"].item() == 30.0
+        # Порядок строк не меняется.
+        assert first["order_no"].to_list() == ["b", "a", "c"]
+        top = run(DedupeStep(), ctx, by=["order_no"], keep="min", column="amount")
+        assert top.filter(pl.col("order_no") == "a")["amount"].item() == 10.0
+    assert "QUALIFY row_number()" in ctx.queries[-1]
     step = DedupeStep()
     assert step.lookback(step.parse_params({"by": ["order_no"], "depth": 3})) == 3
     assert step.lookback(step.parse_params({"by": ["order_no"]})) is None

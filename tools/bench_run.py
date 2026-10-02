@@ -21,12 +21,15 @@ examples/templates/synthetic.pptx: обложка, итоги с метками 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import platform
 import shutil
 import sys
 import tempfile
 import time
+from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -216,13 +219,50 @@ def run_once(histories: dict[str, Any], work: Path, cache: Path | None, name: st
     return res, seconds
 
 
-def run(root: Path, uploads: int, rows: int) -> list[dict[str, Any]]:
+@contextlib.contextmanager
+def profiled() -> Iterator[dict[str, float]]:
+    """Время записи Parquet (Polars) и запросов DuckDB во время запуска: где тратится время
+    узла входа. Только для замера: подменяет методы на время блока."""
+    import polars as pl
+
+    from autogenerator.engine.duck import Duck
+
+    times: dict[str, float] = defaultdict(float)
+    sink, query = pl.LazyFrame.sink_parquet, Duck.run
+
+    def timed_sink(self: Any, path: Any, *a: Any, **k: Any) -> Any:
+        t0 = time.perf_counter()
+        try:
+            return sink(self, path, *a, **k)
+        finally:
+            name = Path(str(path)).name
+            what = "кэш узла" if name.endswith(".tmp") else name.rsplit("-", 1)[0]
+            times[f"Polars → Parquet: {what}"] += time.perf_counter() - t0
+
+    def timed_query(self: Any, q: str, *a: Any, **k: Any) -> Any:
+        t0 = time.perf_counter()
+        try:
+            return query(self, q, *a, **k)
+        finally:
+            times[f"DuckDB: {' '.join(q.split())[:60]}"] += time.perf_counter() - t0
+
+    pl.LazyFrame.sink_parquet = timed_sink  # type: ignore[method-assign]
+    Duck.run = timed_query  # type: ignore[method-assign]
+    try:
+        yield times
+    finally:
+        pl.LazyFrame.sink_parquet = sink  # type: ignore[method-assign]
+        Duck.run = query  # type: ignore[method-assign]
+
+
+def run(root: Path, uploads: int, rows: int, profile: bool = False) -> list[dict[str, Any]]:
     work = Path(tempfile.mkdtemp(prefix="agen-bench-run-"))
     results: list[dict[str, Any]] = []
     try:
         histories = manifests(root, uploads, rows)
         print("Запуск…", flush=True)
-        res, s = run_once(histories, work, work / "cache", "cold")
+        with profiled() if profile else contextlib.nullcontext({}) as times:
+            res, s = run_once(histories, work, work / "cache", "cold")
         what = f"Отчёт без кэша ({res.slides} слайдов)"
         results.append({"what": what, "seconds": round(s, 2), "target": RUN_SECONDS})
         period = res.period.key if res.period else "?"
@@ -232,6 +272,8 @@ def run(root: Path, uploads: int, rows: int) -> list[dict[str, Any]]:
         slow = sorted((n for n in res.nodes if n.seconds), key=lambda n: -(n.seconds or 0))[:8]
         for n in slow:
             print(f"    {n.seconds:6.1f} с  {n.id}", flush=True)
+        for what, sec in sorted(times.items(), key=lambda x: -x[1]):
+            print(f"    {sec:6.1f} с    {what}", flush=True)
         res, s = run_once(histories, work, work / "cache", "warm")
         results.append({"what": "Пересборка с кэшем узлов", "seconds": round(s, 2), "target": None})
         print(f"  с кэшем: {s:.1f} с", flush=True)
@@ -270,9 +312,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rows", type=int, default=10_000_000, help="строк в одной загрузке")
     ap.add_argument("--report", type=Path, help="записать отчёт в файл (Markdown)")
     ap.add_argument("--check", action="store_true", help="код выхода 1, если цель не достигнута")
+    ap.add_argument("--profile", action="store_true", help="время записи Parquet и запросов DuckDB")
     a = ap.parse_args(argv)
     root = ensure_history(a.data, a.uploads, a.rows)
-    results = run(root, a.uploads, a.rows)
+    results = run(root, a.uploads, a.rows, a.profile)
     text = report(results, a.uploads, a.rows)
     print(text)
     if a.report:
