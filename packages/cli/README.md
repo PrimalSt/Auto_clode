@@ -7,7 +7,7 @@ uv run agen run examples/sales/scenario.yaml                 # отчёт в т�
 uv run agen run сценарий.yaml --period 2026-02 -o отчёт.pptx # за прошлый период
 uv run agen run сценарий.yaml -i sales=янв.csv -i sales=фев.csv --workdir отладка
 uv run agen run сценарий.yaml --no-home                      # только файлы, без папки данных
-uv run agen validate сценарий.yaml                           # проверка без данных
+uv run agen validate сценарий.yaml                           # проверка без данных; источники — и из папки данных
 ```
 
 Превью узла сценария — первые строки и число строк до и после каждого шага, набор или

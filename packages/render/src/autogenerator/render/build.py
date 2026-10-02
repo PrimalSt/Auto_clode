@@ -35,6 +35,7 @@ from autogenerator.contracts import (
     BlockPlugin,
     BlockTarget,
     BlockTargetKind,
+    DataNeeds,
     EngineResult,
     ErrorCode,
     Geometry,
@@ -158,6 +159,35 @@ def markers_params(scenario: ScenarioSpec, slide: SlideSpec, example: TemplateSl
     names = set(example.marker_names) if example is not None else None
     common = {k: v for k, v in scenario.markers.items() if names is None or _marker_name(k) in names}
     return {"bindings": dict(slide.markers), "common": common}
+
+
+def slide_needs(
+    scenario: ScenarioSpec, registry: PluginRegistry, number: int, theme: ThemeManifest | None = None
+) -> DataNeeds:
+    """Наборы и показатели одного слайда сценария (номер среди включённых, с единицы): для
+    пробной сборки слайда считаются только они. Блоки с ошибками в параметрах пропускаются —
+    о них сообщает ``validate_slides``."""
+    specs = [s for s in scenario.slides if s.enabled]
+    if not 1 <= number <= len(specs):
+        raise AgenError(ErrorCode.SPEC_REFERENCE, f"В сценарии нет слайда {number} (включённых: {len(specs)})")
+    slide = specs[number - 1]
+    needs = DataNeeds()
+
+    def add(type_: str, raw: dict[str, Any], version: int = 1) -> None:
+        try:
+            plugin = registry.block(type_)
+            found = plugin.data_needs(plugin.parse_params(raw, version))
+        except Exception:
+            return
+        needs.datasets |= found.datasets
+        needs.metrics |= found.metrics
+
+    if slide.example is not None:
+        example = theme.slide(slide.example.id) if theme is not None else None
+        add(MARKERS_BLOCK, markers_params(scenario, slide, example))
+    for block in slide.blocks:
+        add(block.type, block.params, block.type_version)
+    return needs
 
 
 def _validate_example(

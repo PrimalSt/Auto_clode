@@ -242,7 +242,7 @@ def run(req: RunRequest) -> RunResult:
 def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegistry) -> None:
     from autogenerator.engine import analyze, execute
     from autogenerator.history import default_report_period
-    from autogenerator.render import build_presentation, validate_slides
+    from autogenerator.render import build_presentation, slide_needs, validate_slides
     from autogenerator.theme import import_template
 
     scenario = req.scenario
@@ -256,11 +256,20 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     if result.errors:
         return
 
-    manifests = _histories(req, plan, registry, workdir, result.issues, result.inputs, result.from_home)
+    nodes: list[str] | None = None
+    only: set[str] | None = None
+    if req.slide is not None:
+        # Пробная сборка слайда: читаются и считаются только его входы, наборы и показатели
+        # (и основной вход — по нему отчётный период).
+        needs = slide_needs(scenario, registry, req.slide, theme)
+        nodes = [f"dataset:{d}" for d in sorted(needs.datasets)] + [f"metric:{m}" for m in sorted(needs.metrics)]
+        only = {n.split(":", 1)[1] for n in plan.closure(nodes) if n.startswith("input:")} | {scenario.main_input.id}
+    manifests = _histories(req, plan, registry, workdir, result.issues, result.inputs, result.from_home, only=only)
 
     period = req.period or default_report_period(manifests[scenario.main_input.id])
     result.period = period
     options = engine_options(req.cache_dir, req.temp_dir)
+    options.nodes = nodes
     engine_result = execute(plan, registry, ManifestHistory(manifests), period, workdir / "engine", options)
     result.nodes += engine_result.nodes
     result.issues += engine_result.issues

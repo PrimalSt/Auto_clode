@@ -92,3 +92,16 @@ def test_snapshot_source_and_parts(tmp_path: Path):
     agen("source", "create", "orders", "--from", p1)
     out = agen("upload", "add", "orders", p1, p2, "--concat")
     assert "#1 Документы_ч1.csv + Документы_ч2.csv: 3 строк, период 2026-03" in out
+
+
+def test_validate_takes_sources_from_home(tmp_path: Path):
+    text = (EXAMPLE / "scenario.yaml").read_text(encoding="utf-8")
+    template = (ROOT / "examples" / "templates" / "synthetic.pptx").as_posix()
+    scenario = tmp_path / "сценарий.yaml"  # рядом нет sources.yaml
+    scenario.write_text(text.replace("../templates/synthetic.pptx", template), encoding="utf-8")
+    r = runner.invoke(app, ["validate", str(scenario)])
+    assert r.exit_code == 1 and "не описан" in r.output
+    agen("source", "import", EXAMPLE / "sources.yaml")
+    assert "Сценарий в порядке" in agen("validate", scenario)
+    r = runner.invoke(app, ["validate", str(scenario), "--no-home"])
+    assert r.exit_code == 1

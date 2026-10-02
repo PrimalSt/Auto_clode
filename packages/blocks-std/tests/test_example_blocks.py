@@ -212,6 +212,13 @@ def test_chart_fill_combo_changes_categories_and_series():
         if s.find(f"{C}spPr/{A}solidFill/{A}srgbClr") is not None
     ]
     assert len(colors) == len(set(colors))
+    # Формат из сценария получают и подписи: здесь общие подписи группы линии (одна серия);
+    # у столбцов формат задан не у всех серий — остаётся формат шаблона.
+    label_formats = [g.find(f"{C}dLbls/{C}numFmt").get("formatCode") for g in cs.iter(f"{C}barChart", f"{C}lineChart")]
+    assert label_formats == ["#,##0.0", "0%"]
+    params["series"][3]["number_format"] = "0.0%"
+    run(block, t, params, BlockData(datasets={"m": MONTHS}))
+    assert chart_xml(slide, 6).find(f".//{C}lineChart/{C}dLbls/{C}numFmt").get("formatCode") == "0.0%"
     ctx = Ctx()
     block.finish_slide(slide, [(t, block.parse_params(params))], ctx)
 
@@ -357,3 +364,24 @@ def test_number_nbsp_in_table_cells():
         BlockData(datasets={"t": pa.table({"k": ["x"], "v": [1234567.0]})}),
     )
     assert shape.table.cell(1, 1).text == f"1{NBSP}234{NBSP}567"
+
+
+def test_series_labels_get_scenario_format():
+    from lxml import etree
+
+    from autogenerator.blocks_std.chart_xml import set_label_formats
+
+    ser = (
+        '<c:ser><c:idx val="{i}"/><c:order val="{i}"/><c:dLbls>{dlbl}<c:numFmt formatCode="#,##0" sourceLinked="0"/>'
+        '<c:showVal val="1"/></c:dLbls></c:ser>'
+    )
+    dlbl = '<c:dLbl><c:idx val="0"/><c:numFmt formatCode="#,##0" sourceLinked="0"/><c:showVal val="1"/></c:dLbl>'
+    cs = etree.fromstring(
+        f'<c:chartSpace xmlns:c="{C[1:-1]}"><c:chart><c:plotArea><c:barChart>'
+        + ser.format(i=0, dlbl=dlbl)
+        + ser.format(i=1, dlbl="")
+        + "</c:barChart></c:plotArea></c:chart></c:chartSpace>"
+    )
+    set_label_formats(cs, ["#,##0;-#,##0;", None])
+    codes = [nf.get("formatCode") for nf in cs.iter(f"{C}numFmt")]
+    assert codes == ["#,##0;-#,##0;", "#,##0;-#,##0;", "#,##0"]  # подпись точки, подписи серии, вторая серия

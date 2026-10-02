@@ -7,6 +7,8 @@
   ``c16:uniqueId`` и цветом, отличным от остальных серий; группа никогда не остаётся пустой.
 - Настройки точек и подписи точек, для которых нет категории, удаляются; у круговой
   диаграммы с большим числом секторов настройки достраиваются.
+- Формат чисел серии, заданный в сценарии, получают и её подписи: у подписей шаблона обычно
+  свой формат, не связанный с данными.
 - Проверка готового графика: оси групп, уникальные ``c:idx`` и ``c16:uniqueId``, число точек,
   положение подписи «снаружи» у столбцов с накоплением (PowerPoint такой файл не открывает).
 """
@@ -265,6 +267,46 @@ def cleanup_points(cs: Any, n: int, theme: dict[str, str]) -> None:
 def _point_color(dpt: Any, theme: dict[str, str]) -> str | None:
     found = xp(dpt, "./c:spPr/a:solidFill/*")
     return resolve_color(found[0], theme) if found else None
+
+
+# --- формат подписей ----------------------------------------------------------------------------
+
+
+def set_label_formats(cs: Any, formats: list[str | None]) -> None:
+    """Формат подписей серий (по группам в порядке документа, внутри группы — по ``c:order``);
+    ``None`` — оставить как в шаблоне. Меняются подписи самой серии; общие подписи группы — если
+    у всех серий группы задан один и тот же формат."""
+    k = 0
+    for g in groups(cs):
+        sers = group_series(g)
+        fmts = formats[k : k + len(sers)]
+        k += len(sers)
+        for ser, fmt in zip(sers, fmts, strict=False):
+            dls = ser.find(f"{C}dLbls")
+            if fmt is None or dls is None or dls.find(f"{C}delete") is not None:
+                continue
+            _set_num_fmt(dls, fmt, after=dls.findall(f"{C}dLbl"))
+            for d in dls.findall(f"{C}dLbl"):
+                nf = d.find(f"{C}numFmt")
+                if nf is not None:
+                    nf.set("formatCode", fmt)
+                    nf.set("sourceLinked", "0")
+        common = g.find(f"{C}dLbls")
+        same = len(fmts) == len(sers) and fmts[0] is not None and len(set(fmts)) == 1
+        if common is not None and common.find(f"{C}delete") is None and same:
+            _set_num_fmt(common, str(fmts[0]), after=common.findall(f"{C}dLbl"))
+
+
+def _set_num_fmt(parent: Any, fmt: str, after: list[Any]) -> None:
+    nf = parent.find(f"{C}numFmt")
+    if nf is None:
+        nf = etree.Element(f"{C}numFmt")
+        if after:
+            after[-1].addnext(nf)
+        else:
+            parent.insert(0, nf)
+    nf.set("formatCode", fmt)
+    nf.set("sourceLinked", "0")
 
 
 # --- проверка ----------------------------------------------------------------------------------

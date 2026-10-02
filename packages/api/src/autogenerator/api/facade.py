@@ -91,10 +91,33 @@ def validate(
     *,
     sources: str | Path | Sequence[SourceSpec] | None = None,
     theme: str | Path | None = None,
+    home: str | Path | None = None,
+    use_home: bool | None = None,
 ) -> list[Issue]:
-    """Проверить сценарий без данных."""
+    """Проверить сценарий без данных. Источники входов, которых нет в ``sources``, берутся
+    из папки данных (как у ``run``); ``use_home=False`` — только ``sources``."""
     sc, srcs, theme_path, _ = _resolve(scenario, sources, theme)
+    if use_home is not False:
+        srcs = srcs + _home_sources(sc, srcs, home, use_home is True)
     return worker.validate(RunRequest(scenario=sc, sources=srcs, inputs={}, theme=theme_path))
+
+
+def _home_sources(
+    sc: ScenarioSpec, srcs: list[SourceSpec], home: str | Path | None, required: bool
+) -> list[SourceSpec]:
+    """Источники входов из папки данных, которых нет среди ``srcs``."""
+    from .home import Home
+
+    known = {s.id for s in srcs}
+    try:
+        h = Home.open(home, create=False)
+    except AgenError:
+        if required:
+            raise
+        return []
+    with h:
+        names = dict.fromkeys(i.source for i in sc.inputs if i.source not in known)
+        return [h.source(n).spec for n in names if h.has_source(n)]
 
 
 def run(

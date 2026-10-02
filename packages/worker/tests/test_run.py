@@ -51,6 +51,19 @@ def test_example_report(tmp_path: Path):
     assert res.workdir is None
 
 
+def test_slide_preview_computes_only_its_data(tmp_path: Path):
+    res = run(request(tmp_path, slide=2, preview=True, output=str(tmp_path / "slide.pptx")))
+    assert res.ok, res.errors
+    assert res.slides == 1
+    computed = {n.id for n in res.nodes if n.state == "ok"}
+    # Итоги: выручка со сравнением, выполнение плана и график по месяцам; план читается.
+    assert {"dataset:month_mix", "metric:revenue", "metric:plan_done", "input:plan"} <= computed
+    assert not computed & {"dataset:by_region", "dataset:top_managers", "metric:median_order"}
+    cover = run(request(tmp_path, slide=1, preview=True, output=str(tmp_path / "cover.pptx")))
+    assert cover.ok and slide_texts(cover.output_path) == ["Продажи | Март 2026"]
+    assert "plan" not in cover.inputs  # обложке нужен только период
+
+
 def test_other_period_and_workdir(tmp_path: Path):
     work = tmp_path / "work"
     res = run(request(tmp_path, period=Period.parse("2026-02"), workdir=str(work)))

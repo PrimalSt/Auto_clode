@@ -65,7 +65,7 @@ def _print_result(res: RunResult, verbose: bool) -> None:
             continue
         typer.echo(f"  {LEVEL_MARK[i.level]} {i}")
     if res.output_path:
-        typer.echo(f"Готово: {res.output_path} ({res.slides} слайдов, {res.seconds:.1f} с)")
+        typer.echo(f"Готово: {res.output_path} ({_slides(res.slides)}, {res.seconds:.1f} с)")
     if res.workdir:
         typer.echo(f"Рабочая папка: {res.workdir}")
 
@@ -140,10 +140,13 @@ def validate(
     scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
     sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
     theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx")] = None,
+    no_home: Annotated[bool, typer.Option("--no-home", help="Не брать источники из папки данных")] = False,
+    home: Annotated[Path | None, home_option] = None,
 ) -> None:
-    """Проверить сценарий без данных: ссылки, плагины, параметры, макеты шаблона."""
+    """Проверить сценарий без данных: ссылки, плагины, параметры, макеты шаблона и
+    слайды-образцы. Источники, которых нет в --sources, берутся из папки данных."""
     try:
-        issues = api.validate(scenario, sources=sources, theme=theme)
+        issues = api.validate(scenario, sources=sources, theme=theme, home=home, use_home=False if no_home else None)
     except AgenError as e:
         _fail(e)
         return
@@ -154,6 +157,14 @@ def validate(
         typer.echo(f"Ошибок: {len(errors)}", err=True)
         raise typer.Exit(1)
     typer.echo("Сценарий в порядке.")
+
+
+def _slides(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} слайд"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} слайда"
+    return f"{n} слайдов"
 
 
 def _num(n: int | None, approx: bool) -> str:

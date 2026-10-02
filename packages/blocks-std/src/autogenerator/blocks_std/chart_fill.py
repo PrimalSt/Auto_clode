@@ -45,7 +45,7 @@ from autogenerator.contracts import (
 )
 
 from .chart import category_text
-from .chart_xml import check_chart, cleanup_points, set_series_counts, theme_colors
+from .chart_xml import check_chart, cleanup_points, set_label_formats, set_series_counts, theme_colors
 from .formats import Scale
 from .label_bands import fix_slide_labels
 from .values import SCALE_ALIASES
@@ -59,7 +59,9 @@ class FillSeries(BaseModel):
 
     column: str = Field(description="Столбец набора со значениями")
     name: str | None = Field(None, description="Название в легенде; пусто — id столбца")
-    number_format: str | None = Field(None, description="Формат Excel: #,##0, 0.0%, …; пусто — как у серии в шаблоне")
+    number_format: str | None = Field(
+        None, description="Формат Excel для данных и подписей: #,##0, 0.0%, …; пусто — как у серии в шаблоне"
+    )
     scale: Scale | None = Field(None, description="Разделить значения: thousand, million, billion")
 
     @model_validator(mode="before")
@@ -266,6 +268,7 @@ class ChartFillBlock(BlockPlugin):
         except Exception as e:  # тип графика, который python-pptx не умеет заполнять
             raise BlockError([f"python-pptx не заполнил график: {e}"]) from e
         cleanup_points(cs, len(cats), theme)
+        set_label_formats(cs, [s.number_format for s in params.series])
         problems = check_chart(cs, len(cats))
         if problems:
             raise BlockError(problems)
