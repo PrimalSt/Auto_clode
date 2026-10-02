@@ -246,13 +246,13 @@ def profiled() -> Iterator[dict[str, float]]:
         finally:
             times[f"DuckDB: {' '.join(q.split())[:60]}"] += time.perf_counter() - t0
 
-    pl.LazyFrame.sink_parquet = timed_sink  # type: ignore[method-assign]
-    Duck.run = timed_query  # type: ignore[method-assign]
+    setattr(pl.LazyFrame, "sink_parquet", timed_sink)  # noqa: B010 — подмена только на время замера
+    setattr(Duck, "run", timed_query)  # noqa: B010
     try:
         yield times
     finally:
-        pl.LazyFrame.sink_parquet = sink  # type: ignore[method-assign]
-        Duck.run = query  # type: ignore[method-assign]
+        setattr(pl.LazyFrame, "sink_parquet", sink)  # noqa: B010
+        setattr(Duck, "run", query)  # noqa: B010
 
 
 def run(root: Path, uploads: int, rows: int, profile: bool = False) -> list[dict[str, Any]]:
@@ -261,7 +261,8 @@ def run(root: Path, uploads: int, rows: int, profile: bool = False) -> list[dict
     try:
         histories = manifests(root, uploads, rows)
         print("Запуск…", flush=True)
-        with profiled() if profile else contextlib.nullcontext({}) as times:
+        times: dict[str, float] = {}
+        with profiled() if profile else contextlib.nullcontext(times) as times:
             res, s = run_once(histories, work, work / "cache", "cold")
         what = f"Отчёт без кэша ({res.slides} слайдов)"
         results.append({"what": what, "seconds": round(s, 2), "target": RUN_SECONDS})
