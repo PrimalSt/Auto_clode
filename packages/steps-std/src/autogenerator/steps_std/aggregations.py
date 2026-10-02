@@ -82,3 +82,43 @@ class MaxAgg(AggregationPlugin):
 
     def sql(self, column: str | None) -> str:
         return f"MAX({column})"
+
+
+class MedianAgg(AggregationPlugin):
+    name = "median"
+    title = "Медиана"
+
+    def polars_expr(self, column: str | None) -> pl.Expr:
+        return _col(column).median()
+
+    def sql(self, column: str | None) -> str:
+        return f"MEDIAN({column})"
+
+
+class FirstAgg(AggregationPlugin):
+    """Первое непустое значение по дате, затем по порядку загрузки и строке файла (например,
+    остаток на начало периода)."""
+
+    name = "first"
+    title = "Первое значение"
+    needs_order = True
+
+    def polars_expr(self, column: str | None) -> pl.Expr:
+        return _col(column).drop_nulls().first()
+
+    def sql(self, column: str | None) -> str:
+        return f"FIRST({column} ORDER BY _upload_seq, _row) FILTER (WHERE {column} IS NOT NULL)"
+
+
+class LastAgg(AggregationPlugin):
+    """Последнее непустое значение (например, остаток на конец периода)."""
+
+    name = "last"
+    title = "Последнее значение"
+    needs_order = True
+
+    def polars_expr(self, column: str | None) -> pl.Expr:
+        return _col(column).drop_nulls().last()
+
+    def sql(self, column: str | None) -> str:
+        return f"LAST({column} ORDER BY _upload_seq, _row) FILTER (WHERE {column} IS NOT NULL)"

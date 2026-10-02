@@ -58,7 +58,7 @@ def validate_slides(
     """Проверить слайды: макеты, блоки и их параметры, области, ссылки на наборы и показатели."""
     issues: list[Issue] = []
     datasets = {d.id for d in scenario.datasets}
-    metrics = {m.id for m in scenario.metrics}
+    metrics = {m.id for m in scenario.metrics} | {c for m in scenario.metrics for c in m.compare_ids()}
 
     def err(node: str, msg: str) -> None:
         issues.append(Issue(level=IssueLevel.ERROR, node=node, message=msg))

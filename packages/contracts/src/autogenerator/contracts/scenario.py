@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -126,55 +126,217 @@ class SortSpec(BaseModel):
         return value
 
 
+COMPARE_SUFFIXES = {"previous_period": "prev", "same_period_last_year": "ly"}
+
+
+class CompareSpec(BaseModel):
+    """Сравнение с другим периодом (F-305): то же окно, посчитанное за предыдущий отчётный
+    период или за тот же период год назад. Короткая запись — имя: ``previous_period``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window: Literal["previous_period", "same_period_last_year"]
+    suffix: str | None = Field(None, description="Окончание новых столбцов и показателей: prev, ly, …")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_text(cls, value: Any) -> Any:
+        return {"window": value} if isinstance(value, str) else value
+
+    @property
+    def tag(self) -> str:
+        return self.suffix or COMPARE_SUFFIXES[self.window]
+
+
+class DeriveSpec(BaseModel):
+    """Расчёт над готовым набором (F-306): доля от итога, накопительный итог, ранг или
+    формула из столбцов набора."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    fn: Literal["share", "cumsum", "rank", "formula"] | None = None
+    column: str | None = None
+    expr: str | None = Field(None, description="Формула на SQL из столбцов набора: fact / plan")
+    as_: str | None = Field(None, alias="as")
+    desc: bool = Field(True, description="Ранг: 1 — у самого большого значения")
+
+    @model_validator(mode="after")
+    def _check(self) -> DeriveSpec:
+        if self.expr is not None:
+            if self.fn not in (None, "formula"):
+                raise ValueError("у расчёта с expr не задаётся fn")
+            self.fn = "formula"
+            if not self.as_:
+                raise ValueError(f"формуле «{self.expr}» нужно имя столбца (as)")
+        elif self.fn is None or self.fn == "formula":
+            raise ValueError("нужен fn (share, cumsum, rank) или expr")
+        elif not self.column:
+            raise ValueError(f"расчёту {self.fn} нужен столбец")
+        return self
+
+    @property
+    def output_name(self) -> str:
+        if self.as_:
+            return self.as_
+        return f"{self.column}_{self.fn}"
+
+
 class DatasetSpec(BaseModel):
-    """Набор данных: вход → окно → фильтр → группировка → агрегаты → сортировка → топ-N.
+    """Набор данных: вход → окно → фильтр → группировка → агрегаты → сравнение периодов →
+    расчёты → сортировка → топ-N (с «Прочими») или сводная таблица.
 
     Без ``aggregate`` набор — это строки входа (столбцы ``columns``), с сортировкой и топ-N.
+    ``type: sql`` — набор задан запросом ``query`` к входам и другим наборам по их ``id``;
+    ``type: python`` — функцией ``build(tables, ctx)`` в ``code`` (F-308). Окно у таких
+    наборов применяется к каждому входу до запроса или кода.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    input: str
     label: str | None = None
+    type: Literal["table", "sql", "python"] = "table"
+    input: str | None = None
     window: WindowSpec = Field(default_factory=WindowSpec)
     where: str | None = Field(None, description="Условие на SQL (диалект DuckDB)")
     group_by: list[GroupBySpec] = Field(default_factory=list)
     aggregate: list[AggregateSpec] = Field(default_factory=list)
     columns: list[str] = Field(default_factory=list)
+    compare: list[CompareSpec] = Field(default_factory=list)
+    derive: list[DeriveSpec] = Field(default_factory=list)
     sort: list[SortSpec] | None = None
     top: int | None = Field(None, ge=1)
+    others: str | None = Field(None, description="Строка для всего, что не вошло в топ-N, например «Прочие»")
+    pivot: str | None = Field(None, description="Столбец группировки, значения которого становятся столбцами")
+    query: str | None = Field(None, description="Запрос SQL (type: sql)")
+    code: str | None = Field(None, description="Код на Python с функцией build(tables, ctx) (type: python)")
+    inputs: list[str] = Field(default_factory=list, description="Входы и наборы, которые получает код (type: python)")
+    frame: Literal["pandas", "polars"] = "pandas"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_type(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "type" not in value:
+            if "query" in value:
+                return {**value, "type": "sql"}
+            if "code" in value:
+                return {**value, "type": "python"}
+        return value
 
     @model_validator(mode="after")
     def _check(self) -> DatasetSpec:
-        if self.aggregate and self.columns:
-            raise ValueError(f"Набор «{self.id}»: columns задаются только без aggregate")
-        if not self.aggregate and self.group_by:
-            raise ValueError(f"Набор «{self.id}»: у группировки должен быть хотя бы один агрегат")
+        name = f"Набор «{self.id}»"
+        if self.type == "table":
+            if not self.input:
+                raise ValueError(f"{name}: нужен вход (input)")
+            if self.query or self.code or self.inputs:
+                raise ValueError(f"{name}: query, code и inputs задаются только у наборов type: sql и python")
+            if self.aggregate and self.columns:
+                raise ValueError(f"{name}: columns задаются только без aggregate")
+            if not self.aggregate and self.group_by:
+                raise ValueError(f"{name}: у группировки должен быть хотя бы один агрегат")
+            if not self.aggregate and (self.compare or self.pivot or self.others):
+                raise ValueError(f"{name}: compare, pivot и others работают только с aggregate")
+            if self.others is not None:
+                if not self.top:
+                    raise ValueError(f"{name}: others задаётся вместе с top")
+                if len(self.group_by) != 1:
+                    raise ValueError(f"{name}: «{self.others}» собирается только при группировке по одному столбцу")
+            if self.pivot is not None:
+                if self.pivot not in [g.column for g in self.group_by]:
+                    raise ValueError(f"{name}: pivot «{self.pivot}» должен быть столбцом группировки")
+                if self.derive or self.compare or self.others:
+                    raise ValueError(f"{name}: сводная таблица (pivot) не сочетается с derive, compare и others")
+        else:
+            extra = [
+                f for f in ("input", "where", "columns", "pivot", "others") if getattr(self, f) not in (None, [])
+            ] + [f for f in ("group_by", "aggregate", "compare", "derive") if getattr(self, f)]
+            if extra:
+                raise ValueError(f"{name}: у набора type: {self.type} не задаются {', '.join(extra)}")
+            if self.type == "sql" and not self.query:
+                raise ValueError(f"{name}: нужен запрос (query)")
+            if self.type == "python":
+                if not self.code:
+                    raise ValueError(f"{name}: нужен код (code) с функцией build(tables, ctx)")
+                if not self.inputs:
+                    raise ValueError(f"{name}: перечислите входы и наборы, которые получает код (inputs)")
         return self
 
 
 class MetricSpec(BaseModel):
-    """Показатель — одно число: агрегат в своём окне или формула из других показателей."""
+    """Показатель — одно число (F-304): агрегат входа в своём окне, агрегат набора данных,
+    формула из других показателей, запрос SQL или код на Python (F-308).
+
+    ``compare`` добавляет показатели сравнения (F-305): для ``revenue`` с
+    ``compare: [previous_period]`` — ``revenue_prev``, ``revenue_prev_change`` и
+    ``revenue_prev_change_pct``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     label: str | None = None
     input: str | None = None
+    dataset: str | None = None
     window: WindowSpec = Field(default_factory=WindowSpec)
     fn: str | None = None
     column: str | None = None
     where: str | None = None
     formula: str | None = Field(None, description="Формула из id других показателей, например revenue / plan")
+    query: str | None = Field(None, description="Запрос SQL, который возвращает одно число")
+    code: str | None = Field(None, description="Код на Python с функцией value(tables, ctx)")
+    inputs: list[str] = Field(default_factory=list, description="Входы и наборы, которые получает код")
+    frame: Literal["pandas", "polars"] = "pandas"
+    compare: list[CompareSpec] = Field(default_factory=list)
+
+    @property
+    def kind(self) -> Literal["input", "dataset", "formula", "sql", "python"]:
+        if self.formula is not None:
+            return "formula"
+        if self.query is not None:
+            return "sql"
+        if self.code is not None:
+            return "python"
+        return "dataset" if self.dataset is not None else "input"
 
     @model_validator(mode="after")
     def _check(self) -> MetricSpec:
-        if self.formula is None and (self.input is None or self.fn is None):
-            raise ValueError(f"Показатель «{self.id}»: нужна formula или пара input + fn")
-        if self.formula is not None and self.input is not None:
-            raise ValueError(f"Показатель «{self.id}»: formula и input вместе не задаются")
+        name = f"Показатель «{self.id}»"
+        given = [
+            k
+            for k, v in (
+                ("formula", self.formula),
+                ("input", self.input),
+                ("dataset", self.dataset),
+                ("query", self.query),
+                ("code", self.code),
+            )
+            if v is not None
+        ]
+        if not given:
+            raise ValueError(f"{name}: нужна formula или пара input + fn (или dataset + fn, query, code)")
+        if len(given) > 1:
+            raise ValueError(f"{name}: {' и '.join(given)} вместе не задаются")
+        kind = self.kind
+        if kind in ("input", "dataset") and self.fn is None:
+            raise ValueError(f"{name}: нужна формула или пара {kind} + fn")
+        if kind in ("formula", "sql", "python") and (self.fn or self.column or self.where):
+            raise ValueError(f"{name}: fn, column и where задаются только вместе с input или dataset")
+        if kind in ("formula", "dataset") and "window" in self.model_fields_set:
+            raise ValueError(f"{name}: окно задаётся у входа, а не у {'формулы' if kind == 'formula' else 'набора'}")
+        if kind == "python" and not self.inputs:
+            raise ValueError(f"{name}: перечислите входы и наборы, которые получает код (inputs)")
+        if kind != "python" and self.inputs:
+            raise ValueError(f"{name}: inputs задаются только вместе с code")
         return self
+
+    def compare_ids(self) -> list[str]:
+        """Показатели, которые добавляет ``compare``."""
+        out: list[str] = []
+        for c in self.compare:
+            base = f"{self.id}_{c.tag}"
+            out += [base, f"{base}_change", f"{base}_change_pct"]
+        return out
 
 
 class BlockSpec(_Extensible):
@@ -213,6 +375,22 @@ class SlideSpec(BaseModel):
         return self
 
 
+class ScenarioSettings(BaseModel):
+    """Настройки сценария."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    relative_to: Literal["report_period", "run_date"] = Field(
+        "report_period",
+        description="От чего отсчитываются относительные периоды фильтров (F-203): конец отчётного "
+        "периода или дата запуска",
+    )
+
+
+RESERVED_TABLES = {"data"}
+"""Имя ``data`` в шаге SQL — текущая таблица, поэтому вход или набор так называть нельзя."""
+
+
 class ScenarioSpec(BaseModel):
     """Сценарий отчёта целиком."""
 
@@ -222,6 +400,7 @@ class ScenarioSpec(BaseModel):
     name: str
     theme: str | None = Field(None, description="Оформление: id шаблона или путь к .pptx")
     output_name: str = Field("Отчёт_{period}", description="Имя файла; {period} — отчётный период")
+    settings: ScenarioSettings = Field(default_factory=ScenarioSettings)
     inputs: list[InputSpec]
     datasets: list[DatasetSpec] = Field(default_factory=list)
     metrics: list[MetricSpec] = Field(default_factory=list)
@@ -239,13 +418,20 @@ class ScenarioSpec(BaseModel):
         seen: dict[str, str] = {}
         for kind, items in (("вход", self.inputs), ("набор", self.datasets)):
             for it in items:
+                if it.id in RESERVED_TABLES:
+                    raise ValueError(f"{kind} не может называться «{it.id}»: так в SQL называется текущая таблица")
                 if it.id in seen:
                     raise ValueError(f"id «{it.id}» повторяется: {seen[it.id]} и {kind}")
                 seen[it.id] = kind
         metric_ids = [m.id for m in self.metrics]
+        for m in self.metrics:
+            metric_ids += m.compare_ids()
         dupes = sorted({m for m in metric_ids if metric_ids.count(m) > 1})
         if dupes:
-            raise ValueError(f"id показателей повторяются: {', '.join(dupes)}")
+            raise ValueError(
+                f"id показателей повторяются: {', '.join(dupes)} (сравнение периодов добавляет показатели "
+                "с окончаниями _prev, _ly, _change, _change_pct)"
+            )
         return self
 
     @property

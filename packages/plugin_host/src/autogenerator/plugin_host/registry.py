@@ -152,6 +152,13 @@ class PluginRegistry:
             )
         return cast(P, plugin)
 
+    def version(self, kind: PluginKind, name: str) -> str:
+        """Версия пакета, из которого загружен плагин (для ключа кэша); пусто — неизвестна."""
+        for i in self._infos:
+            if i.kind == kind and i.name == name and i.status == PluginStatus.OK:
+                return i.version or ""
+        return ""
+
     def has(self, kind: PluginKind, name: str) -> bool:
         return name in self._plugins[kind]
 

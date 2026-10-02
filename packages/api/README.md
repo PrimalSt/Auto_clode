@@ -35,6 +35,21 @@ with Home.open(write=True) as home:          # папка приложения �
 нескольких файлов загружает `home.upload("orders", ["часть1.xlsx", "часть2.xlsx"])` — одной
 загрузкой. У выгрузки-среза период берётся из имени файла или из `period=Period.parse("2026-01")`.
 
+**Превью** узла — первые строки, число строк до и после каждого шага, набор или показатель:
+
+```python
+from autogenerator.api import preview
+
+res = preview("examples/sales/scenario.yaml", "sales/positive_only")   # вход после шага
+for st in res.steps:
+    print(st.id, st.rows_before, st.rows_after)
+res = preview("examples/sales/scenario.yaml", "metric:revenue", period="2026-02")
+print(res.metrics)   # revenue, revenue_prev, revenue_prev_change, revenue_prev_change_pct
+```
+
+На больших данных превью входа строится по выборке (`res.sample`, `res.approximate`);
+`sample=1` — точно, без выборки.
+
 Также: `validate` (проверка без данных), `inspect` (структура файла), `modules`
 (плагины и их состояние), `load_scenario`, `load_sources`.
 

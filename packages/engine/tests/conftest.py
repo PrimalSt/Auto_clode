@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from autogenerator.contracts import (
     AggregationPlugin,
@@ -34,6 +34,25 @@ class Previous(WindowPlugin):
         return period.shift(-1).span
 
 
+class LastYear(WindowPlugin):
+    name = "same_period_last_year"
+
+    def resolve(self, period: Period, params: Any) -> DateSpan:
+        return period.years_ago(1).span
+
+
+class LastNParams(BaseModel):
+    n: int
+
+
+class LastN(WindowPlugin):
+    name = "last_n"
+    Params = LastNParams
+
+    def resolve(self, period: Period, params: Any) -> DateSpan:
+        return DateSpan(start=period.shift(-(params.n - 1)).start, end_exclusive=period.end_exclusive)
+
+
 class Everything(WindowPlugin):
     name = "all"
 
@@ -49,6 +68,17 @@ class Sum(AggregationPlugin):
 
     def sql(self, column: str | None) -> str:
         return f"SUM({column})"
+
+
+class Last(AggregationPlugin):
+    name = "last"
+    needs_order = True
+
+    def polars_expr(self, column: str | None) -> pl.Expr:
+        return pl.col(column).drop_nulls().last()
+
+    def sql(self, column: str | None) -> str:
+        return f"LAST({column})"
 
 
 class Count(AggregationPlugin):
@@ -75,6 +105,136 @@ class Filter(StepPlugin):
 
     def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
         return lf.filter(ctx.expr(params.where).fill_null(False))
+
+
+class FormulaParams(BaseModel):
+    column: str
+    expr: str
+
+
+class Formula(StepPlugin):
+    name = "formula"
+    Params = FormulaParams
+
+    def columns_used(self, params: Any, tools: Any) -> set[str]:
+        return tools.columns_in(params.expr)
+
+    def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
+        return {**schema, params.column: tools.expr_type(params.expr, schema)}
+
+    def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
+        return ctx.with_column(lf, params.column, params.expr)
+
+
+class DedupeParams(BaseModel):
+    by: list[str]
+    depth: int | None = None
+
+
+class Dedupe(StepPlugin):
+    name = "dedupe"
+    Params = DedupeParams
+    row_local = False
+
+    def lookback(self, params: Any) -> int | None:
+        return params.depth
+
+    def columns_used(self, params: Any, tools: Any) -> set[str]:
+        return set(params.by)
+
+    def key_columns(self, params: Any) -> dict[str, list[str]]:
+        return {"data": params.by}
+
+    def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
+        return lf.sort(["_upload_seq", "_row"]).unique(params.by, keep="last", maintain_order=True)
+
+
+class LinkParams(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    with_: str = Field(alias="with")
+    on: str
+
+
+class Link(StepPlugin):
+    """Простое левое объединение с другим входом по одному ключу."""
+
+    name = "link"
+    Params = LinkParams
+
+    def inputs_used(self, params: Any, tools: Any) -> list[str]:
+        return [params.with_]
+
+    def columns_used(self, params: Any, tools: Any) -> set[str]:
+        return {params.on}
+
+    def key_columns(self, params: Any) -> dict[str, list[str]]:
+        return {"data": [params.on], params.with_: [params.on]}
+
+    def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
+        right = tools.input_schema(params.with_)
+        if right is None:
+            return None
+        return {**schema, **{c: t for c, t in right.items() if c not in schema}}
+
+    def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
+        names = lf.collect_schema().names()
+        right = ctx.input(params.with_)
+        cols = [c for c in right.collect_schema().names() if c == params.on or c not in names]
+        return lf.join(right.select(cols), on=params.on, how="left")
+
+
+class QueryParams(BaseModel):
+    query: str
+
+
+class Query(StepPlugin):
+    name = "sql"
+    Params = QueryParams
+    row_local = False
+
+    def inputs_used(self, params: Any, tools: Any) -> list[str]:
+        return sorted(tools.tables_in(params.query) - {"data"})
+
+    def columns_used(self, params: Any, tools: Any) -> set[str]:
+        return tools.query_columns(params.query, "data") or set()
+
+    def reads_all_columns(self, params: Any, tools: Any) -> bool:
+        return tools.query_columns(params.query, "data") is None
+
+    def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
+        return tools.query_schema(params.query, {"data": schema})
+
+    def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
+        return ctx.sql(params.query, {"data": lf})
+
+
+class CodeParams(BaseModel):
+    code: str
+    mode: str = "table"
+    frame: str = "pandas"
+    timeout: float | None = None
+    cache: bool = True
+
+
+class Code(StepPlugin):
+    name = "python"
+    Params = CodeParams
+    row_local = False
+
+    def columns_used(self, params: Any, tools: Any) -> set[str]:
+        return set()
+
+    def reads_all_columns(self, params: Any, tools: Any) -> bool:
+        return True
+
+    def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
+        return None
+
+    def cacheable(self, params: Any) -> bool:
+        return bool(params.cache)
+
+    def apply(self, lf: pl.LazyFrame, params: Any, ctx: Any) -> pl.LazyFrame:
+        return ctx.run_code(lf, params.code, mode=params.mode, frame=params.frame, timeout=params.timeout)
 
 
 class Boom(StepPlugin):
@@ -118,6 +278,10 @@ class MemoryHistory:
     def coverage(self, input_id: str) -> list[DateSpan]:
         return self._coverage.get(input_id, [])
 
+    def fingerprint(self, input_id: str) -> str | None:
+        df = self.frames[input_id]
+        return f"{input_id}-{df.height}-{df.hash_rows().sum()}"
+
 
 SALES = pl.DataFrame(
     {
@@ -140,7 +304,12 @@ SCHEMA = InputSchema("date", {"date": DType.DATE, "region": DType.STRING, "amoun
 
 @pytest.fixture
 def registry() -> PluginRegistry:
-    return PluginRegistry.from_plugins([ReportPeriod, Previous, Everything, Sum, Count, Filter, Boom])
+    return PluginRegistry.from_plugins(
+        [
+            *[ReportPeriod, Previous, LastYear, LastN, Everything, Sum, Count, Last],
+            *[Filter, Formula, Dedupe, Link, Query, Code, Boom],
+        ]
+    )
 
 
 @pytest.fixture

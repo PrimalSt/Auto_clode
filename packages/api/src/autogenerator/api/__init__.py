@@ -1,7 +1,7 @@
 """Публичный фасад Autogenerator для своего кода и Jupyter: ``load_scenario``, ``run``,
-``validate``, ``inspect``, ``modules`` и папка данных ``Home`` (источники, загрузки, история)."""
+``preview``, ``validate``, ``inspect``, ``modules`` и папка данных ``Home`` (источники, загрузки, история)."""
 
-from .facade import find_inputs, inspect, load_scenario, load_sources, modules, run, validate
+from .facade import find_inputs, inspect, load_scenario, load_sources, modules, preview, run, validate
 from .home import Home, UploadOutcome
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "load_scenario",
     "load_sources",
     "modules",
+    "preview",
     "run",
     "validate",
 ]

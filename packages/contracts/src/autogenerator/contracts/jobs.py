@@ -31,6 +31,30 @@ class RunRequest(BaseModel):
     output_dir: str | None = None
     workdir: str | None = Field(None, description="Рабочая папка; пусто — временная, удаляется после запуска")
     accept_cast_errors: bool = Field(False, description="Принять загрузки с ошибками приведения типов")
+    cache_dir: str | None = Field(
+        None, description="Кэш узлов между запусками и превью (папка cache в папке данных); пусто — без кэша"
+    )
+    temp_dir: str | None = Field(None, description="Временные файлы DuckDB и пользовательского кода")
+
+
+class PreviewRequest(BaseModel):
+    """Задание ``preview``: первые строки и числа строк узла сценария, без сборки .pptx."""
+
+    scenario: ScenarioSpec
+    sources: list[SourceSpec]
+    inputs: dict[str, list[str]] = Field(default_factory=dict)
+    histories: dict[str, HistoryManifest] = Field(default_factory=dict)
+    target: str = Field(description="id входа, набора или показателя; шаг — input:sales/step:dedupe")
+    period: Period | None = None
+    rows: int = Field(20, ge=0, description="Сколько первых строк показать")
+    sample: int | None = Field(
+        None,
+        description="Выборка: None — сама на больших данных, 1 — без выборки, k — каждый k-й ключ",
+    )
+    workdir: str | None = None
+    accept_cast_errors: bool = False
+    cache_dir: str | None = None
+    temp_dir: str | None = None
 
 
 class IngestRequest(BaseModel):

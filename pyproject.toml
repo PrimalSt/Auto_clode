@@ -105,7 +105,7 @@ mypy_path = [
 ]
 
 [[tool.mypy.overrides]]
-module = ["fastexcel.*", "babel.*", "pyarrow.*", "ruamel.*", "xlsxwriter.*", "lxml.*"]
+module = ["fastexcel.*", "babel.*", "pyarrow.*", "ruamel.*", "xlsxwriter.*", "lxml.*", "pandas.*"]
 ignore_missing_imports = true
 
 # --- Границы модулей (ARCHITECTURE.md, раздел 4.2) ---------------------------

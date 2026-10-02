@@ -39,6 +39,8 @@ class ErrorCode(StrEnum):
     # Вычисления
     EXPRESSION = "expression"
     NODE_FAILED = "node_failed"
+    USER_CODE = "user_code"
+    TIMEOUT = "timeout"
     # Оформление и сборка
     THEME_INVALID = "theme_invalid"
     LAYOUT_MISSING = "layout_missing"

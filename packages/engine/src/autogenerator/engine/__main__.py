@@ -3,7 +3,8 @@
 В папке ``--data`` лежит история каждого входа: ``<вход>.parquet`` или папка ``<вход>/`` с
 Parquet (например, сохранённая ``python -m autogenerator.history ... --out``). Столбцы
 должны называться по ``id`` источника. Схемы входов берутся из ``--sources``.
-Печатает показатели и первые строки наборов; с ``--out`` сохраняет их в папку.
+Печатает показатели и первые строки наборов; с ``--out`` сохраняет их в папку. С
+``--preview узел`` показывает превью узла: ``sales/dedupe``, ``by_month``, ``revenue``.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from autogenerator.plugin_host import PluginRegistry
 from .analysis import InputSchema, analyze
 from .execute import execute
 from .loading import load_scenario
+from .preview import preview
 
 
 class FolderHistory:
@@ -68,6 +70,9 @@ class FolderHistory:
         # время, и предупреждений о пропусках не выдаём.
         return [DateSpan(start=None, end_exclusive=date.max)]
 
+    def fingerprint(self, input_id: str) -> str | None:
+        return None
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autogenerator.engine")
@@ -77,19 +82,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--period", required=True, help="отчётный период: 2026-03, 2026-Q1, …")
     ap.add_argument("--out", help="папка для наборов (.parquet) и показателей (metrics.json)")
     ap.add_argument("--workdir", default=".agen-engine", help="рабочая папка движка")
+    ap.add_argument("--preview", metavar="УЗЕЛ", help="превью узла вместо расчёта всего сценария")
     a = ap.parse_args(argv)
     try:
         sc_path = Path(a.scenario)
         scenario = load_scenario(load_yaml(sc_path), sc_path.name)
         sources = {s.id: s for s in load_model_list(SourceSpec, a.sources or sc_path.parent / "sources.yaml")}
-        schemas = {
-            i.id: InputSchema(sources[i.source].period_column, sources[i.source].dtypes)
-            for i in scenario.inputs
-            if i.source in sources
-        }
+        schemas = {i.id: InputSchema.from_source(sources[i.source]) for i in scenario.inputs if i.source in sources}
         registry = PluginRegistry.discover()
         plan = analyze(scenario, registry, schemas)
-        result = execute(plan, registry, FolderHistory(Path(a.data), schemas), Period.parse(a.period), a.workdir)
+        history = FolderHistory(Path(a.data), schemas)
+        if a.preview:
+            pv = preview(plan, registry, history, Period.parse(a.period), a.workdir, a.preview)
+            print(pv.model_dump_json(indent=2))
+            return 0 if not pv.errors else 2
+        result = execute(plan, registry, history, Period.parse(a.period), a.workdir)
     except AgenError as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1

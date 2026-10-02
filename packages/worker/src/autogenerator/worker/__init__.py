@@ -2,7 +2,7 @@
 ``inspect`` (ARCHITECTURE.md, раздел 6.6). Модули обработки вместе импортирует только этот пакет."""
 
 from .ingest_job import draft_source, ingest_upload
-from .run import ManifestHistory, output_path, run, validate
+from .run import ManifestHistory, output_path, preview, run, validate
 from .tools import (
     coverage_report,
     default_period,
@@ -26,6 +26,7 @@ __all__ = [
     "load_scenario",
     "output_path",
     "plugin_manifest",
+    "preview",
     "rows_outside",
     "run",
     "validate",

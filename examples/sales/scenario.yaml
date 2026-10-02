@@ -1,5 +1,6 @@
-# Ежемесячный отчёт по продажам — пример сценария этапа M0.
+# Ежемесячный отчёт по продажам — пример сценария (этапы M0–M2).
 # Запуск из корня репозитория:  uv run agen run examples/sales/scenario.yaml
+# Превью любого узла:           uv run agen preview examples/sales/scenario.yaml dataset:plan_fact
 # Выгрузки берутся из data/<вход>/ по порядку имён; отчётный период по умолчанию —
 # последний месяц основного входа (март 2026).
 
@@ -38,6 +39,8 @@ datasets:
       - { column: amount_net, fn: sum, as: revenue }
       - { fn: count, as: orders }
       - { column: amount_net, fn: mean, as: avg_check }
+    compare: [previous_period]          # revenue_prev, revenue_prev_change, revenue_prev_change_pct
+    derive: [{ fn: share, column: revenue, as: share }]
     sort: [-revenue]
 
   - id: top_managers
@@ -49,15 +52,40 @@ datasets:
     sort: [-revenue]
     top: 5
 
+  # План-факт: запрос SQL к двум входам; окно применяется к каждому входу до запроса.
+  - id: plan_fact
+    label: План-факт по регионам за месяц
+    window: report_period
+    query: |
+      WITH fact AS (SELECT region, sum(amount_net) AS fact FROM sales GROUP BY region),
+           goal AS (SELECT region, sum(plan_amount) AS plan FROM plan GROUP BY region)
+      SELECT region, fact, plan, fact / plan AS done
+      FROM goal LEFT JOIN fact USING (region)
+      ORDER BY done DESC
+
+  # Динамика: месяцы квартала становятся столбцами сводной таблицы.
+  - id: region_months
+    label: Выручка регионов по месяцам квартала
+    input: sales
+    window: quarter_to_date
+    group_by: [region, { column: date, bucket: month }]
+    aggregate: [{ column: amount_net, fn: sum, as: revenue }]
+    sort: [region]
+    pivot: date
+
 metrics:
-  - { id: revenue,      input: sales, window: report_period,   column: amount_net,  fn: sum }
-  - { id: revenue_prev, input: sales, window: previous_period, column: amount_net,  fn: sum }
+  # compare добавляет revenue_prev, revenue_prev_change и revenue_prev_change_pct.
+  - { id: revenue, input: sales, window: report_period, column: amount_net, fn: sum, compare: [previous_period] }
   - { id: revenue_qtd,  input: sales, window: quarter_to_date, column: amount_net,  fn: sum }
   - { id: orders,       input: sales, window: report_period,   fn: count }
   - { id: plan,         input: plan,  window: report_period,   column: plan_amount, fn: sum }
   - { id: plan_qtd,     input: plan,  window: quarter_to_date, column: plan_amount, fn: sum }
   - { id: plan_done,     formula: "revenue / plan" }
   - { id: plan_done_qtd, formula: "revenue_qtd / plan_qtd" }
+  - { id: median_order, input: sales, window: report_period, column: amount_net, fn: median }
+  - id: big_orders
+    window: report_period
+    query: "SELECT count(*) FROM sales WHERE amount_net >= 100000"
 
 slides:
   - layout: title
@@ -72,8 +100,9 @@ slides:
         slot: body
         text: |-
           Выручка без НДС: {{ metrics.revenue | money(scale='million', decimals=1) }}
-          К прошлому месяцу: {{ change_pct(metrics.revenue, metrics.revenue_prev) | percent(sign=true) }}
-          Заказов: {{ metrics.orders | number }}
+          К прошлому месяцу: {{ metrics.revenue_prev_change_pct | percent(sign=true) }}
+          Заказов: {{ metrics.orders | number }}, из них от 100 тыс. ₽: {{ metrics.big_orders | number }}
+          Медианный заказ: {{ metrics.median_order | money }}
           План месяца выполнен на {{ metrics.plan_done | percent }}
 
   - layout: title_and_content
@@ -97,7 +126,8 @@ slides:
         columns:
           - { column: region, header: Регион }
           - { column: revenue, header: "Выручка, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
-          - { column: orders, header: Заказов }
+          - { column: revenue_prev_change_pct, header: К прошлому месяцу, format: { kind: percent, sign: true } }
+          - { column: share, header: Доля, format: { kind: percent } }
           - { column: avg_check, header: "Средний чек, ₽", format: { kind: number, decimals: 0 } }
       - type: chart
         slot: right
@@ -135,3 +165,15 @@ slides:
         series: [{ column: revenue, name: "Выручка без НДС, млн ₽" }]
         number_format: "#,##0.00,,"
         data_labels: true
+
+  - layout: title_and_content
+    blocks:
+      - { type: text, slot: title, text: "План-факт: {{ period.label }}" }
+      - type: table
+        slot: body
+        dataset: plan_fact
+        columns:
+          - { column: region, header: Регион }
+          - { column: fact, header: "Факт без НДС, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
+          - { column: plan, header: "План, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
+          - { column: done, header: Выполнение, format: { kind: percent } }

@@ -10,6 +10,20 @@ uv run agen run сценарий.yaml --no-home                      # толь�
 uv run agen validate сценарий.yaml                           # проверка без данных
 ```
 
+Превью узла сценария — первые строки и число строк до и после каждого шага, набор или
+значение показателя:
+
+```
+uv run agen preview examples/sales/scenario.yaml sales/positive_only   # вход после шага
+uv run agen preview examples/sales/scenario.yaml dataset:plan_fact
+uv run agen preview examples/sales/scenario.yaml metric:revenue --period 2026-02
+uv run agen preview сценарий.yaml sales --sample off                   # точно, без выборки
+uv run agen preview сценарий.yaml sales --json                         # для своего кода
+```
+
+На больших данных превью входа строится по выборке (`--sample auto`), числа строк тогда
+помечены «≈». Код выхода 1 — в узле или в том, от чего он зависит, есть ошибка.
+
 Выгрузки и история (папка данных — `--home`, переменная `AGEN_HOME` или папка приложения):
 
 ```
