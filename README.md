@@ -176,6 +176,7 @@ uv run python -m autogenerator.render examples/sales/scenario.yaml --theme от�
 ```
 uv run pytest            # все тесты
 uv run agen test engine  # тесты одного модуля
+uv run agen test worker --template шаблон.pptx  # приёмочный тест своего шаблона
 uv run ruff check .      # стиль
 uv run mypy              # типы
 uv run lint-imports      # границы модулей

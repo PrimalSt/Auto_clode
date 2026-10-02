@@ -40,21 +40,51 @@ def scaffold_theme(m: ThemeManifest, name: str | None = None) -> str:
 
 # --- картинка слайда --------------------------------------------------------------------
 
-_POWERSHELL = r"""
-$ErrorActionPreference = 'Stop'
-$running = @(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
-$app = New-Object -ComObject PowerPoint.Application
-try {
-    # Только чтение, без окна: если PowerPoint уже открыт, картинка рисуется в нём.
-    $pres = $app.Presentations.Open($env:AGEN_PPTX, -1, 0, 0)
-    try {
-        $w = [int]($pres.PageSetup.SlideWidth * 2); $h = [int]($pres.PageSetup.SlideHeight * 2)
-        $pres.Slides.Item(1).Export($env:AGEN_PNG, 'PNG', $w, $h)
-    } finally { $pres.Close() }
-} finally {
-    if (-not $running -and $app.Presentations.Count -eq 0) { $app.Quit() }
+# Занятый PowerPoint (у пользователя открыт диалог, идёт сохранение) отклоняет вызовы COM
+# с RPC_E_CALL_REJECTED или RPC_E_SERVERCALL_RETRYLATER: такие вызовы повторяются до 30 с.
+# Результаты вызовов записываются в $script:, а не возвращаются: PowerShell перебирал бы
+# возвращённые объекты COM как коллекции.
+_RETRY = r"""
+function Test-Busy($e) {
+    for ($x = $e; $null -ne $x; $x = $x.InnerException) {
+        if (@(-2147418111, -2147417846) -contains $x.HResult) { return $true }
+    }
+    return $false
+}
+function Invoke-Retry([scriptblock]$call) {
+    $deadline = (Get-Date).AddSeconds(30)
+    while ($true) {
+        try { & $call; return }
+        catch {
+            if (-not (Test-Busy $_.Exception) -or (Get-Date) -gt $deadline) { throw }
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
 """
+
+_POWERSHELL = (
+    "$ErrorActionPreference = 'Stop'\n"
+    + _RETRY
+    + r"""
+$running = @(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
+Invoke-Retry { $script:app = New-Object -ComObject PowerPoint.Application }
+try {
+    # Только чтение, без окна: если PowerPoint уже открыт, картинка рисуется в нём.
+    Invoke-Retry { $script:pres = $app.Presentations.Open($env:AGEN_PPTX, -1, 0, 0) }
+    try {
+        Invoke-Retry {
+            $script:w = [int]($pres.PageSetup.SlideWidth * 2)
+            $script:h = [int]($pres.PageSetup.SlideHeight * 2)
+        }
+        Invoke-Retry { $pres.Slides.Item(1).Export($env:AGEN_PNG, 'PNG', $w, $h) }
+    } finally { Invoke-Retry { $pres.Close() } }
+} finally {
+    Invoke-Retry { $script:others = $app.Presentations.Count }
+    if (-not $running -and $others -eq 0) { Invoke-Retry { $app.Quit() } }
+}
+"""
+)
 
 
 def _powerpoint(pptx: Path, png: Path) -> bool:

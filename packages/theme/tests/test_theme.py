@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from pptx import Presentation
 
-from autogenerator.contracts import AgenError, LayoutRole
+from autogenerator.contracts import AgenError, LayoutRole, ThemeManifest
 from autogenerator.theme import import_template
+from autogenerator.theme.__main__ import main
 from autogenerator.theme.importer import ZIP_RATIO_MIN_BYTES
 
 
@@ -90,6 +91,17 @@ def test_macros_are_rejected(template: Path, tmp_path: Path):
     )
     with pytest.raises(AgenError, match="макросы"):
         import_template(sneaky, tmp_path / "out2")
+
+
+def test_module_saves_manifest_with_working_copy(template: Path, tmp_path: Path, capsys):
+    out = tmp_path / "m.json"
+    assert main([str(template), "--out", str(out)]) == 0
+    m = ThemeManifest.model_validate_json(out.read_text(encoding="utf-8"))
+    # Рабочая копия лежит рядом с манифестом, а не во временной папке: по манифесту собирает render.
+    assert Path(m.pptx_path) == (tmp_path / "m.template.pptx").resolve()
+    assert Presentation(m.pptx_path).slides[0].shapes.title.text == "Продажи за {{Месяц}}"
+    assert main([m.pptx_path, "--out", str(out)]) == 1
+    assert "перезаписала бы сам шаблон" in capsys.readouterr().err
 
 
 def test_not_a_pptx(tmp_path: Path):

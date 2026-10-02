@@ -385,3 +385,35 @@ def test_series_labels_get_scenario_format():
     set_label_formats(cs, ["#,##0;-#,##0;", None])
     codes = [nf.get("formatCode") for nf in cs.iter(f"{C}numFmt")]
     assert codes == ["#,##0;-#,##0;", "#,##0;-#,##0;", "#,##0"]  # подпись точки, подписи серии, вторая серия
+
+
+def test_point_unique_ids_shared_with_labels_but_not_between_points():
+    from lxml import etree
+
+    from autogenerator.blocks_std.chart_xml import C16, check_chart, cleanup_points
+
+    def ext(uid: str) -> str:
+        return f'<c:extLst><c:ext uri="{{C3BC}}"><c16:uniqueId val="{uid}"/></c:ext></c:extLst>'
+
+    # Так круговую с настройками секторов сохраняет PowerPoint: у сектора и его подписи один id.
+    dpt = '<c:dPt><c:idx val="{i}"/><c:spPr><a:solidFill><a:srgbClr val="{rgb}"/></a:solidFill></c:spPr>{ext}</c:dPt>'
+    dlbl = '<c:dLbl><c:idx val="{i}"/><c:showVal val="1"/>{ext}</c:dLbl>'
+    points = [("{00000001-AA}", "FF0000"), ("{00000003-AA}", "00FF00")]
+    cs = etree.fromstring(
+        f'<c:chartSpace xmlns:c="{C[1:-1]}" xmlns:a="{A[1:-1]}" xmlns:c16="{C16}"><c:chart><c:plotArea><c:pieChart>'
+        '<c:ser><c:idx val="0"/><c:order val="0"/>'
+        + "".join(dpt.format(i=i, rgb=rgb, ext=ext(u)) for i, (u, rgb) in enumerate(points))
+        + "<c:dLbls>"
+        + "".join(dlbl.format(i=i, ext=ext(u)) for i, (u, _) in enumerate(points))
+        + "</c:dLbls>"
+        + '<c:val><c:numRef><c:numCache><c:ptCount val="2"/></c:numCache></c:numRef></c:val>'
+        + ext("{0000000C-AA}")
+        + "</c:ser></c:pieChart></c:plotArea></c:chart></c:chartSpace>"
+    )
+    assert check_chart(cs, 2) == []
+    cleanup_points(cs, 4, {})  # секторов стало больше: новые копируют оформление, но не id
+    uids = [u.get("val") for d in cs.iter(f"{C}dPt") for u in d.iter(f"{{{C16}}}uniqueId")]
+    assert len(uids) == 4 and len(set(uids)) == 4
+    for el in cs.iter(f"{C}ptCount"):
+        el.set("val", "4")
+    assert check_chart(cs, 4) == []

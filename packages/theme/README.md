@@ -31,6 +31,9 @@ uv run agen theme scaffold "C:\Шаблоны\Корпоративный.pptx" -
 uv run python -m autogenerator.theme шаблон.pptx --out манифест.json
 ```
 
+С `--out` рядом с манифестом сохраняется рабочая копия шаблона (`манифест.template.pptx`):
+по ним двоим собирает отчёт `python -m autogenerator.render`.
+
 Зависит только от `contracts`.
 
 Тесты модуля: `uv run agen test theme` (или `uv run pytest packages/theme`).

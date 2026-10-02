@@ -65,6 +65,7 @@ uv run agen history sales --export история.parquet           # дейст
 ```
 uv run agen modules                                          # плагины и их состояние
 uv run agen test engine                                      # тесты одного модуля
+uv run agen test worker --template шаблон.pptx               # приёмочный тест своего шаблона
 ```
 
 Коды выхода `agen run`: 0 — отчёт собран; 2 — собран, но на слайдах есть пометки об

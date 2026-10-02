@@ -966,6 +966,18 @@ def _fix_cluster(
     return log
 
 
+def label_overlaps(slide: Any, locale: str = "ru") -> list[dict[str, Any]]:
+    """Наложения подписей линии на подписи столбцов и друг на друга в группах графиков слайда,
+    где есть и линия, и столбцы с подписями, — как их видит модель подписей. Для проверки
+    готового отчёта: слайд не меняется."""
+    out: list[dict[str, Any]] = []
+    for cl in _clusters(_members(slide)):
+        labels, _ = _model(cl, {m["key"]: m["live"] for m in cl}, locale, 1.0)
+        if {"line", "bar"} <= {lb["kind"] for lb in labels}:
+            out += [p for p in find_pairs(labels, ("line-bar", "line-line")) if p["severity"] == "overlap"]
+    return out
+
+
 def _count(labels: list[dict[str, Any]]) -> dict[str, int]:
     pairs = find_pairs(labels, ("line-bar", "line-line"))
     overlap = sum(p["severity"] == "overlap" for p in pairs)

@@ -129,3 +129,10 @@ def test_preview_slide(tmp_path: Path):
     assert any("Итоги, март 2026" in sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
     r = runner.invoke(app, ["preview", str(SCENARIO), "slide:99", "-o", str(out)])
     assert r.exit_code != 0
+
+
+def test_template_acceptance_is_worker_only(tmp_path: Path):
+    r = runner.invoke(app, ["test", "render", "--template", str(ROOT / "examples" / "templates" / "synthetic.pptx")])
+    assert r.exit_code == 1 and "только у модуля worker" in r.output
+    r = runner.invoke(app, ["test", "worker", "--template", str(tmp_path / "нет.pptx")])
+    assert r.exit_code == 1 and "Шаблон не найден" in r.output

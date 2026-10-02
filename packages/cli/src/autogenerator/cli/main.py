@@ -7,6 +7,7 @@ CLI вызывает движок напрямую через фасад ``api``
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -420,6 +421,14 @@ def _repo_root() -> Path | None:
 def test(
     ctx: typer.Context,
     module: Annotated[str, typer.Argument(help="Модуль: engine, ingest, render, …")],
+    template: Annotated[
+        Path | None,
+        typer.Option(
+            "--template",
+            help="Приёмочный тест на своём шаблоне .pptx (модуль worker): все метки, графики и таблицы "
+            "заполняются пробными значениями и проверяются",
+        ),
+    ] = None,
 ) -> None:
     """Прогнать тесты модуля (режим разработчика: работает в копии исходников)."""
     root = _repo_root()
@@ -432,7 +441,18 @@ def test(
         known = ", ".join(sorted(p.name for p in (root / "packages").iterdir() if p.is_dir()))
         typer.echo(f"Нет модуля «{module}». Есть: {known}", err=True)
         raise typer.Exit(1)
-    code = subprocess.call([sys.executable, "-m", "pytest", str(pkg), *ctx.args], cwd=root)
+    target, env = str(pkg), None
+    if template is not None:
+        # Шаблон собирают theme и render вместе, а это делает только worker (ARCHITECTURE.md, раздел 13).
+        if pkg.name != "worker":
+            typer.echo("--template — приёмочный тест шаблона, он есть только у модуля worker", err=True)
+            raise typer.Exit(1)
+        if not template.is_file():
+            typer.echo(f"Шаблон не найден: {template}", err=True)
+            raise typer.Exit(1)
+        target = str(pkg / "tests" / "test_template.py")
+        env = {**os.environ, "AGEN_TEST_TEMPLATE": str(template.resolve())}
+    code = subprocess.call([sys.executable, "-m", "pytest", target, *ctx.args], cwd=root, env=env)
     raise typer.Exit(code)
 
 

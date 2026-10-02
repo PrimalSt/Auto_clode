@@ -251,6 +251,7 @@ def cleanup_points(cs: Any, n: int, theme: dict[str, str]) -> None:
                     continue
                 new = copy.deepcopy(dpts[i % len(dpts)])
                 new.find(f"{C}idx").set("val", str(i))
+                _new_unique_id(new)  # другая точка — другой c16:uniqueId
                 sppr = new.find(f"{C}spPr")
                 if sppr is not None:
                     color = distinct_color(used, theme)
@@ -312,6 +313,11 @@ def _set_num_fmt(parent: Any, fmt: str, after: list[Any]) -> None:
 # --- проверка ----------------------------------------------------------------------------------
 
 
+def _uids(el: Any) -> list[str]:
+    """c16:uniqueId самого элемента (серии, точки, подписи), без вложенных."""
+    return [u.get("val") for u in el.findall(f"{C}extLst/{C}ext/{{{C16}}}uniqueId")]
+
+
 def check_chart(cs: Any, categories: int) -> list[str]:
     """Проверка готового графика: то, что PowerPoint не прощает или что выдаёт ошибку заполнения."""
     problems: list[str] = []
@@ -337,9 +343,17 @@ def check_chart(cs: Any, categories: int) -> list[str]:
     idx = [val(s, "idx") for s in sers]
     if len(set(idx)) != len(idx):
         problems.append("у серий повторяются c:idx")
-    uids = [u.get("val") for s in sers for u in s.iter(f"{{{C16}}}uniqueId")]
+    # У серии свой c16:uniqueId; у точки (c:dPt) и её подписи (c:dLbl) он общий — так их
+    # связывает PowerPoint, — но у разных точек серии разный.
+    uids = [u for s in sers for u in _uids(s)]
     if len(set(uids)) != len(uids):
         problems.append("у серий повторяются c16:uniqueId")
+    for s in sers:
+        for kind in ("dPt", "dLbls/c:dLbl"):
+            pts = [u for el in xp(s, f"./c:{kind}") for u in _uids(el)]
+            if len(set(pts)) != len(pts):
+                problems.append(f"в серии {val(s, 'idx')} у разных точек одинаковые c16:uniqueId")
+                break
     for s in sers:
         cnt = x1(s, "./c:val//c:ptCount/@val")
         if cnt is not None and int(cnt) != categories:

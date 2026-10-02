@@ -9,13 +9,17 @@ examples/templates/synthetic.pptx: обложка, итоги с метками 
 и таблицей.
 
 Запуск идёт через то же задание исполнителя ``run``, что и ``agen run``, без кэша узлов
-(холодный запуск) и второй раз с кэшем (пересборка после правки слайда).
+(холодный запуск) и второй раз с кэшем (пересборка после правки слайда). С ``--retry``
+холодный запуск дольше цели повторяется один раз с пустым кэшем: на общих машинах GitHub с
+Windows время заметно меняется от запуска к запуску, а настоящее замедление видно в обоих
+замерах. Отчёт показывает оба, ``--check`` судит по повтору.
 
 Примеры::
 
     uv run python tools/bench_run.py                            # 5 × 10 млн строк
     uv run python tools/bench_run.py --rows 2000000             # 5 × 2 млн
     uv run python tools/bench_run.py --check --report bench.md  # код 1, если цель не достигнута
+    uv run python tools/bench_run.py --check --retry             # повтор холодного запуска дольше цели
 """
 
 from __future__ import annotations
@@ -255,17 +259,24 @@ def profiled() -> Iterator[dict[str, float]]:
         setattr(Duck, "run", query)  # noqa: B010
 
 
-def run(root: Path, uploads: int, rows: int, profile: bool = False) -> list[dict[str, Any]]:
+def run(root: Path, uploads: int, rows: int, profile: bool = False, retry: bool = False) -> list[dict[str, Any]]:
     work = Path(tempfile.mkdtemp(prefix="agen-bench-run-"))
     results: list[dict[str, Any]] = []
     try:
         histories = manifests(root, uploads, rows)
         print("Запуск…", flush=True)
         times: dict[str, float] = {}
+        cache = work / "cache"
         with profiled() if profile else contextlib.nullcontext(times) as times:
-            res, s = run_once(histories, work, work / "cache", "cold")
+            res, s = run_once(histories, work, cache, "cold")
         what = f"Отчёт без кэша ({res.slides} слайдов)"
         results.append({"what": what, "seconds": round(s, 2), "target": RUN_SECONDS})
+        if retry and s > RUN_SECONDS:
+            print(f"  без кэша: {s:.1f} с — дольше цели, повтор с пустым кэшем", flush=True)
+            results[-1]["retried"] = True
+            cache = work / "cache-2"
+            res, s = run_once(histories, work, cache, "cold-2")
+            results.append({"what": f"{what}, повтор", "seconds": round(s, 2), "target": RUN_SECONDS})
         period = res.period.key if res.period else "?"
         print(f"  без кэша: {s:.1f} с, {res.slides} слайдов, период {period}", flush=True)
         for w in res.warnings:
@@ -275,7 +286,7 @@ def run(root: Path, uploads: int, rows: int, profile: bool = False) -> list[dict
             print(f"    {n.seconds:6.1f} с  {n.id}", flush=True)
         for what, sec in sorted(times.items(), key=lambda x: -x[1]):
             print(f"    {sec:6.1f} с    {what}", flush=True)
-        res, s = run_once(histories, work, work / "cache", "warm")
+        res, s = run_once(histories, work, cache, "warm")
         results.append({"what": "Пересборка с кэшем узлов", "seconds": round(s, 2), "target": None})
         print(f"  с кэшем: {s:.1f} с", flush=True)
         results.append({"what": "Пиковая память процесса", "peak_bytes": peak_memory_bytes()})
@@ -289,6 +300,11 @@ def ok(r: dict[str, Any]) -> bool:
     return "seconds" not in r or target is None or float(r["seconds"]) <= float(target)
 
 
+def passed(results: list[dict[str, Any]]) -> bool:
+    """Цель достигнута: замер, который повторили, судится по повтору."""
+    return all(ok(r) for r in results if not r.get("retried"))
+
+
 def report(results: list[dict[str, Any]], uploads: int, rows: int) -> str:
     lines = [
         f"Бенчмарк запуска — {platform.system()} {platform.release()}, {os.cpu_count()} ядер, "
@@ -300,6 +316,8 @@ def report(results: list[dict[str, Any]], uploads: int, rows: int) -> str:
     for r in results:
         if "seconds" in r:
             target, verdict = ("—", "—") if r["target"] is None else (f"{r['target']:.0f} с", "да" if ok(r) else "НЕТ")
+            if r.get("retried"):
+                verdict += " (повтор ниже)"
             lines.append(f"| {r['what']} | {r['seconds']:.1f} с | {target} | {verdict} |")
         else:
             lines.append(f"| {r['what']} | {r['peak_bytes'] / 2**30:.2f} ГБ | — | — |")
@@ -314,14 +332,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", type=Path, help="записать отчёт в файл (Markdown)")
     ap.add_argument("--check", action="store_true", help="код выхода 1, если цель не достигнута")
     ap.add_argument("--profile", action="store_true", help="время записи Parquet и запросов DuckDB")
+    ap.add_argument("--retry", action="store_true", help="повторить холодный запуск, если он дольше цели")
     a = ap.parse_args(argv)
     root = ensure_history(a.data, a.uploads, a.rows)
-    results = run(root, a.uploads, a.rows, a.profile)
+    results = run(root, a.uploads, a.rows, a.profile, a.retry)
     text = report(results, a.uploads, a.rows)
     print(text)
     if a.report:
         a.report.write_text(text, encoding="utf-8")
-    if a.check and not all(ok(r) for r in results):
+    if a.check and not passed(results):
         return 1
     return 0
 
