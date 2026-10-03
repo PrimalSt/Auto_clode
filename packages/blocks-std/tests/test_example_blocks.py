@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
+from lxml import etree
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
 from autogenerator.blocks_std.chart_fill import ChartFillBlock
@@ -161,6 +163,100 @@ def test_unreplaceable_marker_stops_build():
     assert any("перенос строки" in p for p in problems)
     with pytest.raises(BlockError):
         block.render(slide_target(slide, info), params, BlockData(), Ctx())
+
+
+def run_color(r) -> str | None:
+    clr = r._r.find(f"{A}rPr/{A}solidFill/{A}srgbClr")
+    return None if clr is None else clr.get("val")
+
+
+def colored(binding: dict, metrics: dict | None = None) -> dict[str, str | None]:
+    """Цвета прогонов абзаца «Δ {{X}} к марту» после замены: текст прогона → RGB."""
+    slide, box, info = text_slide(["Δ {{X}} к марту"])
+    run(MarkersBlock(), slide_target(slide, info), {"bindings": {"X": binding}}, BlockData(metrics=metrics or {}))
+    return {r.text: run_color(r) for r in box.text_frame.paragraphs[0].runs}
+
+
+def test_marker_color_forms():
+    def color(value):
+        return MarkersBlock().parse_params({"bindings": {"X": {"value": "1", "color": value}}}).bindings["X"].color
+
+    assert MarkersBlock().parse_params({"bindings": {"X": "x"}}).bindings["X"].color is None
+    c = color("sign")
+    assert (c.positive, c.negative, c.zero, c.by) == ("2E7559", "C00000", None, None)
+    c = color("1f4e79")
+    assert (c.positive, c.negative, c.zero) == ("1F4E79",) * 3
+    c = color({"positive": "#00b050", "zero": "7f7f7f", "negative": None, "by": "d"})
+    assert (c.positive, c.negative, c.zero, c.by) == ("00B050", None, "7F7F7F", "d")
+    for bad in ("12345", "GGGGGG", {"negative": "красный"}):
+        with pytest.raises(ValueError, match="6 шестнадцатеричных цифр"):
+            color(bad)
+    for number in (123456, float("inf")):  # 123456 и 2E7559 без кавычек в YAML
+        with pytest.raises(ValueError, match="в кавычки"):
+            color(number)
+    with pytest.raises(ValueError, match="extra"):
+        color({"positiv": "2E7559"})
+
+
+def test_marker_color_by_sign():
+    by_metric = {"metric": "d", "percent": True, "color": "sign"}
+    assert colored(by_metric, {"d": 0.05}) == {"Δ ": None, "5,0%": "2E7559", " к марту": None}
+    assert colored(by_metric, {"d": -0.05})["-5,0%"] == "C00000"
+    assert colored(by_metric, {"d": 0})["0,0%"] is None
+    # by важнее показателя привязки и текста; пустой by — знак из текста
+    assert colored({"metric": "d", "color": {"by": "e"}}, {"d": -3, "e": 1})["-3"] == "2E7559"
+    assert colored({"value": "-1", "color": {"by": "e"}}, {"e": 0.5})["-1"] == "2E7559"
+    assert colored({"value": "(-1%)", "color": {"by": "e"}}, {"e": None})["(-1%)"] == "C00000"
+    for text, rgb in (("(+3%)", "2E7559"), ("(-3%)", "C00000"), ("(\u22123%)", "C00000"), ("(0%)", None)):
+        assert colored({"value": text, "color": "sign"})[text] == rgb
+    text = {"text": "({{ metrics.d | number(sign=true) }}%)", "color": "sign"}
+    assert colored(text, {"d": 3})["(+3%)"] == "2E7559"
+    assert colored(text, {"d": -2})["(-2%)"] == "C00000"
+    fixed = {"value": "(-1%)", "color": "1F4E79"}
+    assert colored(fixed)["(-1%)"] == "1F4E79"
+    zero = {"value": "0", "color": {"zero": "7F7F7F", "positive": None}}
+    assert colored(zero)["0"] == "7F7F7F"
+    assert colored({"value": "+1", "color": {"positive": None}})["+1"] is None
+
+
+def test_marker_color_replaces_template_fill_in_schema_order():
+    slide, box, info = text_slide(["{{X}}", " и {{Y}}"])
+    for r in box.text_frame.paragraphs[0].runs:
+        r.font.color.rgb = RGBColor(0x12, 0x34, 0x56)
+        r.font.name = "Test Sans"
+        r._r.find(f"{A}rPr").insert(0, etree.Element(f"{A}ln"))
+    params = {"bindings": {"X": {"value": "+5", "color": "sign"}, "Y": {"value": "0", "color": "sign"}}}
+    run(MarkersBlock(), slide_target(slide, info), params)
+    runs = {r.text: r._r.find(f"{A}rPr") for r in box.text_frame.paragraphs[0].runs}
+    assert [etree.QName(e).localname for e in runs["+5"]] == ["ln", "solidFill", "latin"]
+    assert runs["+5"].find(f"{A}solidFill/{A}srgbClr").get("val") == "2E7559"
+    # ноль без цвета — цвет шаблона остаётся
+    assert runs["0"].find(f"{A}solidFill/{A}srgbClr").get("val") == "123456"
+    assert runs[" и "].find(f"{A}solidFill/{A}srgbClr").get("val") == "123456"
+
+
+def test_marker_color_skips_blank_and_preview():
+    binding = {"metric": "d", "empty": "blank", "color": {"zero": "7F7F7F"}}
+    assert colored(binding, {"d": None}) == {"Δ ": None, "": None, " к марту": None}
+    ctx = Ctx(preview=True)
+    slide, box, info = text_slide(["{{X}}"])
+    params = {"bindings": {"X": {"metric": "d", "color": {"zero": "7F7F7F"}}}}
+    run(MarkersBlock(), slide_target(slide, info), params, BlockData(metrics={"d": None}), ctx)
+    rpr = box.text_frame.paragraphs[0].runs[0]._r.find(f"{A}rPr")
+    assert rpr.find(f"{A}highlight") is not None and rpr.find(f"{A}solidFill") is None
+
+
+def test_marker_color_data_needs():
+    block = MarkersBlock()
+    params = {
+        "bindings": {
+            "A": {"value": "x", "color": {"by": "a"}},
+            "B": {"metric": "b", "color": "sign"},
+            "C": {"text": "{{ metrics.c }}", "color": {"by": "c2"}},
+        },
+        "common": {"D": {"period": "month", "color": {"by": "d"}}},
+    }
+    assert block.data_needs(block.parse_params(params)).metrics == {"a", "b", "c", "c2", "d"}
 
 
 # --- графики ------------------------------------------------------------------------------

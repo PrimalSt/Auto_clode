@@ -20,10 +20,17 @@ ARCHITECTURE.md, раздел 6.5).
           Прирост+: {metric: revenue_prev_change_pct, percent: true, sign: true}
           Месяц@12#2: {period: month_dat}       # второе {{Месяц}} в фигуре 12: «к сентябрю»
 
+Цвет значения по знаку — ``color``: ``sign`` — положительное зелёным, отрицательное красным,
+ноль как в шаблоне; ``"1F4E79"`` — один цвет при любом знаке; полностью — ``positive``,
+``negative``, ``zero`` и ``by`` (показатель, знак которого выбирает цвет). Без ``by`` знак
+берётся из показателя привязки, у текста и готового значения — из самого текста: «+» —
+положительное, «-» или «−» — отрицательное.
+
 Замена: PowerPoint режет текст на прогоны по языку и флагу орфографии, поэтому текст абзаца
 склеивается из прогонов, полей и переносов, метки ищутся в склеенном тексте и заменяются
 справа налево. Значение получает отдельный прогон с оформлением прогона, где начинается
-метка; язык — по значению (ru-RU для кириллицы), флаг ошибки орфографии снимается.
+метка; язык — по значению (ru-RU для кириллицы), флаг ошибки орфографии снимается, ``color``
+перекрашивает только этот прогон.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ import re
 from typing import Any, Literal
 
 from lxml import etree
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autogenerator.contracts import (
     BlockContext,
@@ -57,6 +64,7 @@ from .values import ValueFormat, one_line
 _KEY = re.compile(r"^(?P<name>.+?)@(?P<shape>\d+)(?:#(?P<occ>\d+))?$")
 _CYRILLIC = re.compile("[А-Яа-яЁё]")
 _LATIN = re.compile("[A-Za-z]")
+_RGB = re.compile("^[0-9A-Fa-f]{6}$")
 HIGHLIGHT = "FFFF00"
 
 
@@ -88,6 +96,52 @@ PERIOD_VARS: dict[str, Any] = {
 IV квартал 2026). ``*_name`` — «I квартал», ``*_label`` — «I квартал 2027»."""
 
 
+def _rgb(v: Any) -> str:
+    """``"1f4e79"`` или ``"#1F4E79"`` → ``"1F4E79"``."""
+    if isinstance(v, int | float) and not isinstance(v, bool):
+        # без кавычек YAML читает 123456 как число, а 2E7559 — как бесконечность
+        raise ValueError(f'цвет прочитан как число ({v}): возьмите его в кавычки, например "2E7559"')
+    s = str(v).strip().removeprefix("#")
+    if not _RGB.match(s):
+        raise ValueError(f"цвет «{v}» — не RGB: нужно 6 шестнадцатеричных цифр, например 2E7559")
+    return s.upper()
+
+
+class MarkerColor(BaseModel):
+    """Цвет значения метки по знаку, RGB; пусто — цвет шаблона. Короткая запись: ``sign`` —
+    цвета по умолчанию, ``"1F4E79"`` — один цвет при любом знаке."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    positive: str | None = Field("2E7559", description="Цвет положительного значения; пусто — как в шаблоне")
+    negative: str | None = Field("C00000", description="Цвет отрицательного значения; пусто — как в шаблоне")
+    zero: str | None = Field(None, description="Цвет нуля; пусто — как в шаблоне")
+    by: str | None = Field(
+        None,
+        description="id показателя, знак которого выбирает цвет; пусто — показатель привязки или знак в тексте",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_text(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower() == "sign":
+            return {}
+        if isinstance(v, str | int | float) and not isinstance(v, bool):
+            rgb = _rgb(v)
+            return {"positive": rgb, "negative": rgb, "zero": rgb}
+        return v
+
+    @field_validator("positive", "negative", "zero", mode="before")
+    @classmethod
+    def _check_rgb(cls, v: Any) -> Any:
+        return None if v is None else _rgb(v)
+
+    def pick(self, sign: int) -> str | None:
+        if sign > 0:
+            return self.positive
+        return self.negative if sign < 0 else self.zero
+
+
 class MarkerBinding(ValueFormat):
     """Привязка метки. Короткая запись — строка: ``period.month`` — переменная периода,
     иначе — id показателя."""
@@ -102,6 +156,9 @@ class MarkerBinding(ValueFormat):
     empty: Literal["stop", "blank", "keep"] = Field(
         "stop",
         description="Если значения нет: stop — остановить сборку, blank — оставить пустой, keep — оставить метку",
+    )
+    color: MarkerColor | None = Field(
+        None, description="Цвет значения по знаку: sign — зелёный и красный, «1F4E79» — один цвет"
     )
 
     @model_validator(mode="before")
@@ -198,6 +255,32 @@ def binding_value(b: MarkerBinding, data: BlockData, ctx: BlockContext, after: s
     return text
 
 
+def _sign(v: Any) -> int | None:
+    """Знак числа: 1, -1 или 0; ``None`` — пусто или не число."""
+    if v is None or isinstance(v, bool | str):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return (x > 0) - (x < 0)
+
+
+def value_color(b: MarkerBinding, value: str, metrics: dict[str, Any]) -> str | None:
+    """Цвет значения по знаку; ``None`` — как в шаблоне. Знак — по показателю ``by``, иначе по
+    показателю привязки, иначе по тексту значения: «+» — плюс, «-» или «−» — минус, иначе ноль."""
+    c = b.color
+    if c is None:
+        return None
+    sign = None
+    for metric in (c.by, b.metric):
+        if sign is None and metric is not None:
+            sign = _sign(metrics.get(metric))
+    if sign is None:
+        sign = 1 if "+" in value else -1 if "-" in value or "\u2212" in value else 0
+    return c.pick(sign)
+
+
 # --- замена в XML ------------------------------------------------------------------------
 
 
@@ -247,8 +330,23 @@ def _highlight(run: etree._Element) -> None:
         rpr.append(hl)
 
 
-def replace_match(m: MarkerMatch, value: str | None) -> None:
-    """Заменить вхождение метки значением (``None`` — подсветить метку и оставить как есть).
+def _color(rpr: etree._Element, rgb: str) -> None:
+    for tag in ("noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill"):
+        for old in rpr.findall(f"{A}{tag}"):
+            rpr.remove(old)
+    fill = etree.Element(f"{A}solidFill")
+    etree.SubElement(fill, f"{A}srgbClr", val=rgb)
+    # заливка идёт сразу после a:ln, раньше эффектов, highlight, подчёркивания, шрифтов и ссылок
+    ln = rpr.find(f"{A}ln")
+    if ln is not None:
+        ln.addnext(fill)
+    else:
+        rpr.insert(0, fill)
+
+
+def replace_match(m: MarkerMatch, value: str | None, color: str | None = None) -> None:
+    """Заменить вхождение метки значением (``None`` — подсветить метку и оставить как есть);
+    ``color`` — цвет значения, RGB (``None`` — как в шаблоне).
 
     Текст перед меткой остаётся в своём прогоне, значение получает новый прогон с оформлением
     прогона, где метка начинается, текст после метки — прогон с оформлением прогона, где она
@@ -269,6 +367,8 @@ def replace_match(m: MarkerMatch, value: str | None) -> None:
     new = copy.deepcopy(first.el)
     _set_text(new, value)
     _lang(_run_props(new), value)
+    if color is not None:
+        _color(_run_props(new), color)
     tail = None
     if after:
         tail = copy.deepcopy(last.el)
@@ -306,6 +406,8 @@ class MarkersBlock(BlockPlugin):
                 metrics.add(b.metric)
             elif b.text is not None:
                 metrics |= referenced_metrics(b.text)
+            if b.color is not None and b.color.by:
+                metrics.add(b.color.by)
         return DataNeeds(metrics=metrics)
 
     def check(self, params: Any, example: TemplateSlideInfo | None, shape_id: int | None) -> list[str]:
@@ -388,7 +490,7 @@ class MarkersBlock(BlockPlugin):
                         replace_match(m, None)  # подсветить: в превью метка остаётся видна
                         ctx.keep_marker(sh.id, m.name)
                     continue
-                replace_match(m, value)
+                replace_match(m, value, value_color(b, value, data.metrics) if b is not None else None)
         for p in problems:
             ctx.warn(p)
 
