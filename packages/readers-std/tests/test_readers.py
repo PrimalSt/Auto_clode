@@ -4,6 +4,7 @@ import pytest
 import xlsxwriter
 
 from autogenerator.contracts import AgenError, ErrorCode, ReadOptions
+from autogenerator.readers_std import csv_reader
 from autogenerator.readers_std.csv_reader import CsvReader, detect_delimiter, detect_encoding
 from autogenerator.readers_std.excel_reader import ExcelReader
 from autogenerator.readers_std.names import dedupe_names
@@ -160,21 +161,23 @@ def test_csv_stray_quote_and_ragged_line(tmp_path: Path):
     assert e.value.details["line"] == 3
 
 
-def test_csv_trailing_delimiter_is_not_ragged(tmp_path: Path):
+@pytest.mark.parametrize(("encoding", "eol"), [("utf-8", "\n"), ("cp1251", "\r\n")])
+def test_csv_trailing_delimiter_is_not_ragged(tmp_path: Path, encoding: str, eol: str):
     # Разделитель в конце каждой строки данных, но не шапки: лишнее поле пустое, и файл
-    # читается как обычный — без параметров и замечаний, в том числе по порциям.
+    # читается как обычный — без параметров и замечаний, в том числе по порциям (меньше 64 КБ
+    # порция не бывает, файл — на несколько порций). Выгрузки из Windows — в cp1251 и с \r\n.
     f = tmp_path / "x.csv"
-    f.write_text(
-        "Дата;Регион;Сумма\n" + "".join(f"0{i % 9 + 1}.03.2026;Москва;{i};\n" for i in range(300)), encoding="utf-8"
-    )
+    text = "Дата;Регион;Сумма\n" + "".join(f"0{i % 9 + 1}.03.2026;Москва;{i};\n" for i in range(10_000))
+    f.write_bytes(text.replace("\n", eol).encode(encoding))
     r = CsvReader()
-    r.chunk_bytes = 256
+    r.chunk_bytes = 1 << 16
     notes: list[str] = []
     opts = r.sniff(f, ReadOptions())
+    assert opts.encoding == encoding
     rows = [row for b in r.batches(f, opts, note=notes.append) for row in b.to_pylist()]
-    assert len(rows) == 300 and notes == []
-    assert rows[-1] == {"Дата": "03.03.2026", "Регион": "Москва", "Сумма": "299"}
-    assert r.sample(f, opts).table.num_rows == 300
+    assert len(rows) == 10_000 and notes == []
+    assert rows[-1] == {"Дата": "01.03.2026", "Регион": "Москва", "Сумма": "9999"}
+    assert r.sample(f, opts).table.num_rows == 10_000
 
 
 def test_csv_ragged_row_is_an_error_with_line_and_option(tmp_path: Path):
@@ -194,25 +197,48 @@ def test_csv_ragged_row_is_an_error_with_line_and_option(tmp_path: Path):
     assert e.value.details["line"] == 2 and "4 полей, а в шапке 2" in e.value.message
 
 
-def test_csv_ragged_truncate_reports_rows(tmp_path: Path):
-    lines = ["a;b;c"]
-    for i in range(200):
-        tail = ";лишнее" if i in (50, 120) else ";x;y" if i == 150 else ";" if i % 2 else ""
-        lines.append(f"{i};{i};{i}{tail}")
+def test_csv_ragged_line_is_where_the_row_starts(tmp_path: Path):
+    # Строка с переводом строки в кавычках начинается раньше, чем кончается; строки файла
+    # делятся только по \n, как у Polars (\u2028 и \x85 в тексте — не конец строки).
+    f = tmp_path / "x.csv"
+    f.write_text('a;b;c\n1;x\u2028y\x85z;3\n2;"много\nстрок";3;лишнее\n', encoding="utf-8")
+    with pytest.raises(AgenError) as e:
+        _rows(CsvReader(), f)
+    assert e.value.details["line"] == 3 and "4 полей, а в шапке 3" in e.value.message
+
+
+def test_csv_ragged_truncate_reports_rows(tmp_path: Path, monkeypatch):
+    # Файл на несколько порций по 64 КБ; лишних полей одно, два и десять (больше, чем
+    # запасных столбцов, — такая порция проверяется построчно).
+    tails = {20_000: ";лишнее", 25_000: ";x;y", 30_000: ";" * 9 + "z", 35_000: ";лишнее"}
+    lines = ["a;b;c"] + [f"{i};{i};{i}{tails.get(i, ';' if i % 2 else '')}" for i in range(40_000)]
     f = tmp_path / "x.csv"
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
     r = CsvReader()
-    r.chunk_bytes = 300
+    r.chunk_bytes = 1 << 16
     notes: list[str] = []
     opts = r.sniff(f, ReadOptions(ragged="truncate"))
     assert opts.ragged == "truncate"
+    # Номер строки считается чтением файла от начала: только для замечания, а не у каждой
+    # порции с лишними полями (иначе на большом файле чтение растёт квадратично).
+    counted: list[int] = []
+    line_at = csv_reader._line_at
+
+    def counting(path: Path, offset: int) -> int:
+        counted.append(offset)
+        return line_at(path, offset)
+
+    monkeypatch.setattr(csv_reader, "_line_at", counting)
     rows = [row for b in r.batches(f, opts, note=notes.append) for row in b.to_pylist()]
-    assert len(rows) == 200 and rows[150] == {"a": "150", "b": "150", "c": "150"}
-    # Три строки с данными в лишних полях; пустые лишние поля не в счёт.
+    assert len(rows) == 40_000
+    assert rows[25_000] == {"a": "25000", "b": "25000", "c": "25000"}
+    assert rows[30_000] == {"a": "30000", "b": "30000", "c": "30000"}
+    # Пустые лишние поля (разделитель в конце нечётных строк) не в счёт.
     assert notes == [
-        "В файле x.csv строк, где полей больше, чем в шапке: 3 (первая — строка 52); "
+        "В файле x.csv строк, где полей больше, чем в шапке: 4 (первая — строка 20002); "
         "лишние поля отброшены (ragged: truncate)"
     ]
+    assert len(counted) == 1
 
 
 def test_csv_quoted_delimiters_are_not_ragged(tmp_path: Path):

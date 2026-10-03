@@ -334,19 +334,20 @@ def _file_columns(u: UploadRecord) -> set[str]:
 
 def _print_replaced(h: Home, r: UploadRecord, overlaps: list[str]) -> None:
     """Какие прежние загрузки заменяет новая (правило replace_period). Вторая часть выгрузки,
-    загруженная отдельной командой, заменяет первую, а не дополняет её — это надо видеть."""
+    загруженная отдельной командой, заменяет первую, а не дополняет её — это надо видеть.
+    Загрузка на проверке заменит их, только когда её примут."""
     olds = [h.upload_record(u) for u in overlaps]
+    active = r.status == UploadStatus.ACTIVE
+    verb = "Заменяет" if active else "После принятия заменит"
     if all(u.period == r.period for u in olds):
         what = "загрузку" if len(olds) == 1 else "загрузки"
         names = ", ".join(f"#{u.seq} {u.original_name}" for u in olds)
-        typer.echo(
-            f"  Заменяет {what} {names} за тот же период {r.period.key}: прежние строки за этот период "
-            "в историю не входят"
-        )
+        tail = ": прежние строки за этот период в историю не входят" if active else ""
+        typer.echo(f"  {verb} {what} {names} за тот же период {r.period.key}{tail}")
     else:
         where = "загрузке" if len(olds) == 1 else "загрузках"
         names = ", ".join(f"#{u.seq} {u.original_name} ({u.period.key})" for u in olds)
-        typer.echo(f"  Заменяет строки за {r.period.key} в {where} {names}")
+        typer.echo(f"  {verb} строки за {r.period.key} в {where} {names}")
     if any(_file_columns(u) == _file_columns(r) for u in olds):
         typer.echo("  Если это части одной выгрузки, загрузите их одной командой с --concat")
 

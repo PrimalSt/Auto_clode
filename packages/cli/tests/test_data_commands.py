@@ -109,6 +109,12 @@ def test_second_part_uploaded_separately_replaces_first(tmp_path: Path):
     out = agen("upload", "add", "orders", p3)
     assert "Заменяет загрузки #1 Заказы_ч1.csv, #2 Заказы_ч2.csv за тот же период 2026-03" in out
     assert "--concat" not in out
+    # Загрузка на проверке ничего не заменяет, пока её не примут.
+    p4 = tmp_path / "Заказы_исправленные.csv"
+    p4.write_text("Дата;Сумма\n05.03.2026;5\n06.03.2026;6\n32.03.2026;7\n", encoding="utf-8")
+    out = agen("upload", "add", "orders", p4)
+    assert "на проверке" in out and "После принятия заменит загрузки #1 Заказы_ч1.csv, #2" in out
+    assert "Заменяет" not in out and "в историю не входят" not in out
 
 
 def test_ragged_rows(tmp_path: Path):
