@@ -4,7 +4,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from autogenerator.api import Home, run
+from autogenerator.api import Home, find_inputs, load_scenario, run
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
@@ -148,6 +148,17 @@ def test_run_takes_history_from_home(tmp_path: Path):
     assert sorted(res.from_home) == ["plan", "sales"] and res.period is not None and res.period.key == "2026-02"
     files = run(EXAMPLE / "scenario.yaml", home=tmp_path / "home", use_home=False, output=tmp_path / "f.pptx")
     assert files.from_home == [] and files.period is not None and files.period.key == "2026-03"
+
+
+def test_find_inputs_takes_every_export_format(tmp_path: Path):
+    # Выгрузки одного входа лежат в папке вперемешку: .xlsx и .xlsb, .xls, CSV; прочее — не данные.
+    d = tmp_path / "sales"
+    d.mkdir()
+    for name in ("янв.xlsx", "фев.XLSB", "мар.xls", "апр.csv", "май.xlsm", "заметки.docx", "план.pdf"):
+        (d / name).touch()
+    files = find_inputs(load_scenario(EXAMPLE / "scenario.yaml"), tmp_path)
+    assert [Path(f).name for f in files["sales"]] == ["апр.csv", "май.xlsm", "мар.xls", "фев.XLSB", "янв.xlsx"]
+    assert "plan" not in files
 
 
 def test_parts_of_one_export_and_duplicate_set(home: Home, tmp_path: Path):

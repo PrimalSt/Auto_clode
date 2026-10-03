@@ -59,13 +59,15 @@ def test_office_document_that_no_reader_opens(tmp_path: Path, registry):
 
 
 def test_zip_without_excel_book(tmp_path: Path, registry):
-    # Книги .xlsx и .xlsb — zip, их узнал бы читатель; а в этом zip книги нет (документ Word).
-    f = tmp_path / "a.xlsb"
-    with zipfile.ZipFile(f, "w") as z:
-        z.writestr("word/document.xml", "<document/>")
-    with pytest.raises(AgenError, match="не читается как книга Excel: это zip-архив без книги") as e:
-        inspect_file(f, registry)
-    assert "распакуйте" in (e.value.hint or "")
+    # Книги .xlsx и .xlsb — zip, их узнал бы читатель; а в этих zip книги нет (документ Word,
+    # таблица OpenDocument).
+    for name, part in (("a.xlsb", "word/document.xml"), ("b.ods", "content.xml")):
+        f = tmp_path / name
+        with zipfile.ZipFile(f, "w") as z:
+            z.writestr(part, "<document/>")
+        with pytest.raises(AgenError, match="не читается как книга Excel: это zip-архив без книги") as e:
+            inspect_file(f, registry)
+        assert "распакуйте" in (e.value.hint or "") and "сохраните как .xlsx" in (e.value.hint or "")
 
 
 def test_write_partitions_by_month(tmp_path: Path, registry, jsonl):

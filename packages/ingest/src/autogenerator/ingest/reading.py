@@ -64,8 +64,9 @@ def choose_reader(path: Path, registry: PluginRegistry, fmt: str | None = None) 
         raise AgenError(
             ErrorCode.FILE_FORMAT,
             f"{path.name} не читается как книга Excel: это zip-архив без книги "
-            "(документ Word или PowerPoint, архив с файлами)",
-            hint="Если в архиве выгрузка, распакуйте его и загрузите файл из архива.",
+            "(документ Word или PowerPoint, таблица .ods, архив с файлами)",
+            hint="Если в архиве выгрузка, распакуйте его и загрузите файл из архива; "
+            "таблицу .ods сохраните как .xlsx (Книга Excel).",
         )
     known = ", ".join(sorted({f for r in readers for f in r.formats})) or "нет читателей"
     raise AgenError(ErrorCode.FILE_FORMAT, f"Не знаю, как читать {path.name}. Поддерживаются: {known}")
