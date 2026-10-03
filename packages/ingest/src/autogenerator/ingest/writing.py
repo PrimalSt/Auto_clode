@@ -105,7 +105,8 @@ def write_upload(
     ``cancelled`` опрашивается между порциями: отмена удаляет недописанную загрузку.
     ``more`` — следующие файлы этой же выгрузки, они дописываются в ту же загрузку.
     ``fixed_period`` — значение столбца периода для всех строк, когда период задаётся при
-    загрузке (выгрузка-срез без столбца с месяцем).
+    загрузке (выгрузка-срез без столбца с месяцем). Замечания читателя (например, у скольких
+    строк отброшены лишние поля) попадают в ``notes`` итога.
     """
     t0 = time.perf_counter()
     parts = [FilePart(Path(path), mapping, options), *more]
@@ -125,6 +126,7 @@ def write_upload(
     rejects: pq.ParquetWriter | None = None
     rejects_path = tmp / "rejects.parquet" if len(parts) == 1 else tmp / "rejects"
     first_opts: ReadOptions | None = None
+    notes: list[str] = []
     rows = 0
     empty_rows = 0
     null_period = 0
@@ -156,7 +158,7 @@ def write_upload(
             if rejects is not None and len(parts) > 1:
                 rejects.close()
                 rejects = None
-            batches = reader.batches(part.path, opts, batch_rows=batch_rows, progress=progress)
+            batches = reader.batches(part.path, opts, batch_rows=batch_rows, progress=progress, note=notes.append)
             for batch in prefetch(iter(batches), depth=2):
                 if cancelled is not None and cancelled():
                     raise AgenError(ErrorCode.CANCELLED, f"Загрузка {part.path.name} отменена")
@@ -279,6 +281,7 @@ def write_upload(
         period_min=pmin,
         period_max=pmax,
         cast_issues=issues,
+        notes=notes,
         status=UploadStatus.NEEDS_REVIEW if reasons else UploadStatus.ACTIVE,
         review_reasons=reasons,
         options=first_opts,

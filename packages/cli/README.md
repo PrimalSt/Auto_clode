@@ -7,7 +7,7 @@ uv run agen run examples/sales/scenario.yaml                 # отчёт в т�
 uv run agen run сценарий.yaml --period 2026-02 -o отчёт.pptx # за прошлый период
 uv run agen run сценарий.yaml -i sales=янв.csv -i sales=фев.csv --workdir отладка
 uv run agen run сценарий.yaml --no-home                      # только файлы, без папки данных
-uv run agen validate сценарий.yaml                           # проверка без данных
+uv run agen validate сценарий.yaml                           # проверка без данных; источники — и из папки данных
 ```
 
 Превью узла сценария — первые строки и число строк до и после каждого шага, набор или
@@ -24,6 +24,18 @@ uv run agen preview сценарий.yaml sales --json                         #
 На больших данных превью входа строится по выборке (`--sample auto`), числа строк тогда
 помечены «≈». Код выхода 1 — в узле или в том, от чего он зависит, есть ошибка.
 
+Слайды и шаблон:
+
+```
+uv run agen theme check шаблон.pptx --verbose                # слайды, метки, графики, замечания
+uv run agen theme check шаблон.pptx --layouts --json         # макеты и роли; JSON для своего кода
+uv run agen theme scaffold шаблон.pptx -o слайды.yaml        # заготовка слайдов для сценария
+uv run agen preview сценарий.yaml slide:3 --image слайд.png  # пробная сборка одного слайда
+```
+
+`agen theme check` возвращает код 1, если в шаблоне есть ошибки. Пробная сборка слайда
+пишет `превью_слайда_N.pptx` (или `-o`), непривязанные метки остаются на виду.
+
 Выгрузки и история (папка данных — `--home`, переменная `AGEN_HOME` или папка приложения):
 
 ```
@@ -38,6 +50,7 @@ uv run agen source show sales --versions
 uv run agen upload add sales янв.csv фев.csv                 # загрузка с прогрессом
 uv run agen upload add sales мар.csv --overlap append        # правило, если у источника «ask»
 uv run agen upload add orders ч1.xlsx ч2.xlsx --concat       # части одной выгрузки — одна загрузка
+uv run agen upload add orders выгрузка.csv --ragged truncate # строки длиннее шапки: отбросить лишние поля
 uv run agen upload add clients выгрузка.xlsx --period 2026-01 # период среза, если его нет в имени
 uv run agen upload list sales
 uv run agen upload show <id>                                 # ошибки приведения, профиль
@@ -48,11 +61,18 @@ uv run agen history sales                                    # загрузки,
 uv run agen history sales --export история.parquet           # действующая история в файл
 ```
 
+Если новая загрузка заменяет прежнюю за тот же период (правило `replace_period`), команда
+так и пишет: «Заменяет загрузку #1 … за тот же период» (загрузка на проверке — «После
+принятия заменит …»). Когда у прежней загрузки те же столбцы, она подсказывает `--concat`:
+части одной выгрузки, загруженные отдельными командами, заменяют друг друга, а не
+складываются.
+
 Прочее:
 
 ```
 uv run agen modules                                          # плагины и их состояние
 uv run agen test engine                                      # тесты одного модуля
+uv run agen test worker --template шаблон.pptx               # приёмочный тест своего шаблона
 ```
 
 Коды выхода `agen run`: 0 — отчёт собран; 2 — собран, но на слайдах есть пометки об

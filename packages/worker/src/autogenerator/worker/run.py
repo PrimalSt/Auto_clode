@@ -242,7 +242,7 @@ def run(req: RunRequest) -> RunResult:
 def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegistry) -> None:
     from autogenerator.engine import analyze, execute
     from autogenerator.history import default_report_period
-    from autogenerator.render import build_presentation, validate_slides
+    from autogenerator.render import build_presentation, slide_needs, validate_slides
     from autogenerator.theme import import_template
 
     scenario = req.scenario
@@ -252,26 +252,45 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     result.issues += plan.issues
     theme = import_template(req.theme, workdir / "theme")
     _dump(workdir / "theme" / "manifest.json", theme)
-    result.issues += validate_slides(scenario, registry, theme)
+    result.issues += validate_slides(scenario, registry, theme, preview=req.preview)
     if result.errors:
         return
 
-    manifests = _histories(req, plan, registry, workdir, result.issues, result.inputs, result.from_home)
+    nodes: list[str] | None = None
+    only: set[str] | None = None
+    if req.slide is not None:
+        # Пробная сборка слайда: читаются и считаются только его входы, наборы и показатели
+        # (и основной вход — по нему отчётный период).
+        needs = slide_needs(scenario, registry, req.slide, theme)
+        nodes = [f"dataset:{d}" for d in sorted(needs.datasets)] + [f"metric:{m}" for m in sorted(needs.metrics)]
+        only = {n.split(":", 1)[1] for n in plan.closure(nodes) if n.startswith("input:")} | {scenario.main_input.id}
+    manifests = _histories(req, plan, registry, workdir, result.issues, result.inputs, result.from_home, only=only)
 
     period = req.period or default_report_period(manifests[scenario.main_input.id])
     result.period = period
     options = engine_options(req.cache_dir, req.temp_dir)
+    options.nodes = nodes
     engine_result = execute(plan, registry, ManifestHistory(manifests), period, workdir / "engine", options)
     result.nodes += engine_result.nodes
     result.issues += engine_result.issues
     _save_engine_outputs(workdir / "engine" / "outputs", engine_result)
 
-    rendered = build_presentation(scenario, theme, engine_result, registry, output_path(req, period))
+    rendered = build_presentation(
+        scenario, theme, engine_result, registry, output_path(req, period), preview=req.preview, only=req.slide
+    )
     result.nodes += rendered.nodes
     result.issues += rendered.issues
     result.slides = rendered.slides
     result.output_path = rendered.output_path
     result.ok = rendered.output_path is not None and not result.errors
+    if req.image and rendered.output_path:
+        from .theme_jobs import slide_image
+
+        try:
+            result.image_note = slide_image(rendered.output_path, req.image)
+            result.image_path = req.image
+        except AgenError as e:
+            result.issues.append(Issue(level=IssueLevel.WARNING, code=str(e.code), message=str(e)))
 
 
 def _histories(

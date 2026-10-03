@@ -26,12 +26,12 @@ from .periods import DateSpan, Period
 from .results import Issue
 from .scenario import WindowSpec
 from .sources import DType, ReadOptions
-from .theme import Geometry
+from .theme import Geometry, TemplateSlideInfo
 
 if TYPE_CHECKING:
     import polars as pl
 
-PLUGIN_API_VERSION = "0.3"
+PLUGIN_API_VERSION = "0.5"
 
 ColumnTypes = dict[str, DType | None]
 """Столбцы таблицы и их типы; ``None`` — тип станет известен только после прогона
@@ -110,6 +110,9 @@ class ReadProgress:
 
 
 ProgressCallback = Callable[[ReadProgress], None]
+NoteCallback = Callable[[str], None]
+"""Замечание читателя о файле целиком, которое надо показать пользователю (например, у
+скольких строк отброшены лишние поля)."""
 
 
 @dataclass
@@ -148,11 +151,13 @@ class ReaderPlugin(Plugin):
         options: ReadOptions,
         batch_rows: int = 100_000,
         progress: ProgressCallback | None = None,
+        note: NoteCallback | None = None,
     ) -> Iterator[pa.RecordBatch]:
         """Порции строк; все столбцы текстовые (``string``, ``large_string`` или ``string_view``),
         названия — как в файле (повторы различаются суффиксом « (2)», « (3)»). ``options`` —
         результат ``sniff``. Ошибку кодировки или формата читатель сообщает ``AgenError`` с
-        номером строки файла."""
+        номером строки файла; то, что прочитано не как в файле, но не мешает загрузке
+        (например, отброшенные по ``ragged: truncate`` поля), — через ``note``."""
 
     def columns(self, path: Path, options: ReadOptions) -> list[str]:
         """Названия столбцов в том виде, в каком их отдаст ``batches``. По умолчанию — по
@@ -380,14 +385,29 @@ class DataNeeds(BaseModel):
     metrics: set[str] = Field(default_factory=set)
 
 
+class BlockTargetKind(StrEnum):
+    """Что заполняет блок: область слайда из макета или готовую фигуру слайда-образца."""
+
+    SLOT = "slot"
+    CHART = "chart"
+    TABLE = "table"
+    MARKERS = "markers"
+
+
 @dataclass
 class BlockTarget:
-    """Куда ставится блок. ``slide`` и ``placeholder`` — объекты python-pptx."""
+    """Куда ставится блок. ``slide``, ``placeholder`` и ``shape`` — объекты python-pptx.
+
+    На слайде из макета ``geometry`` — область, куда ставится блок, а ``placeholder`` —
+    плейсхолдер области, если он есть. На слайде-образце ``shape`` — фигура шаблона, которую
+    заполняет блок (график, таблица), ``example`` — манифест слайда-образца."""
 
     slide: Any
     geometry: Geometry
     placeholder: Any | None = None
     slot: str | None = None
+    shape: Any | None = None
+    example: TemplateSlideInfo | None = None
 
 
 @dataclass
@@ -399,20 +419,73 @@ class BlockData:
 class BlockContext(Protocol):
     period: Period
     scenario_name: str
+    preview: bool
+    """Пробная сборка для превью: непривязанные метки и пустые значения не останавливают её."""
 
     def warn(self, message: str) -> None: ...
 
+    def keep_marker(self, shape_id: int, name: str) -> None:
+        """Метка остаётся в тексте намеренно («оставить метку» или превью): проверка после
+        сборки не считает её незаменённой."""
+        ...
+
+
+class BlockError(Exception):
+    """Блок не смог заполнить цель. ``problems`` — все места списком: на слайде-образце сборка
+    останавливается и показывает их вместе с местами из других блоков."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__("; ".join(problems))
+        self.problems = problems
+
+
+class PreviewKind(StrEnum):
+    TEXT = "text"
+    ECHARTS = "echarts"
+    HTML = "html"
+    VALUES = "values"
+    PNG = "png"
+    SVG = "svg"
+
+
+class PreviewSpec(BaseModel):
+    """Превью блока в одном из общих видов, которые умеет рисовать интерфейс (раздел 4.3):
+    готовый текст, настройки графика ECharts, HTML-таблица, значения меток, PNG или SVG."""
+
+    kind: PreviewKind
+    text: str | None = None
+    option: dict[str, Any] | None = Field(None, description="Настройки графика ECharts")
+    html: str | None = None
+    values: dict[str, str | None] | None = Field(None, description="Метка → значение (None — не заполнена)")
+    data: str | None = Field(None, description="PNG в base64 или текст SVG")
+    warnings: list[str] = Field(default_factory=list)
+
 
 class BlockPlugin(ParamsPlugin):
-    """Блок слайда: текст, график, таблица и т. д."""
+    """Блок слайда: текст, график, таблица, метки и графики слайда-образца и т. д."""
 
     kind = PluginKind.BLOCK
+    target_kind: ClassVar[BlockTargetKind] = BlockTargetKind.SLOT
 
     @abstractmethod
     def data_needs(self, params: Any) -> DataNeeds: ...
 
+    def check(self, params: Any, example: TemplateSlideInfo | None, shape_id: int | None) -> list[str]:
+        """Замечания до запуска по манифесту слайда-образца: нет фигуры, не совпадают серии,
+        не привязаны метки. Слайд из макета — ``example=None``."""
+        return []
+
     @abstractmethod
     def render(self, target: BlockTarget, params: Any, data: BlockData, ctx: BlockContext) -> None: ...
+
+    def preview(self, target: BlockTarget, params: Any, data: BlockData, ctx: BlockContext) -> PreviewSpec | None:
+        """Превью блока без сборки .pptx; ``None`` — блок показывается заглушкой."""
+        return None
+
+    def finish_slide(self, slide: Any, items: list[tuple[BlockTarget, Any]], ctx: BlockContext) -> None:
+        """Вызывается один раз на слайд после всех блоков слайда, со всеми целями и параметрами
+        блоков этого типа: например, ``chart_fill`` разводит подписи наложенных графиков."""
+        return None
 
 
 # --- Манифест плагинов ----------------------------------------------------------------

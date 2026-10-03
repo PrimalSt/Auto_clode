@@ -18,12 +18,15 @@ from .reading import inspect_file
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autogenerator.ingest")
     ap.add_argument("file")
-    ap.add_argument("--format", help="csv или xlsx; по умолчанию — по файлу")
+    ap.add_argument("--format", help="csv, xlsx или xls; по умолчанию — по файлу")
     ap.add_argument("--encoding")
     ap.add_argument("--delimiter")
     ap.add_argument("--no-quote", action="store_true", help="в CSV нет кавычек")
     ap.add_argument("--header-row", type=int, help="строка заголовков; по умолчанию — найти")
     ap.add_argument("--sheet", action="append", help="лист Excel; можно несколько")
+    ap.add_argument(
+        "--ragged", choices=["error", "truncate"], default="error", help="строки CSV длиннее шапки: ошибка или обрезать"
+    )
     ap.add_argument("--json", action="store_true", help="снимок структуры в JSON")
     a = ap.parse_args(argv)
     sheet: str | list[str | int] | None = None
@@ -35,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         quote=None if a.no_quote else '"',
         header_row=a.header_row,
         sheet=sheet,
+        ragged=a.ragged,
     )
     try:
         snap = inspect_file(a.file, PluginRegistry.discover(), opts, fmt=a.format)

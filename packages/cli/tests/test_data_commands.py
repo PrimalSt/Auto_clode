@@ -92,3 +92,61 @@ def test_snapshot_source_and_parts(tmp_path: Path):
     agen("source", "create", "orders", "--from", p1)
     out = agen("upload", "add", "orders", p1, p2, "--concat")
     assert "#1 Документы_ч1.csv + Документы_ч2.csv: 3 строк, период 2026-03" in out
+
+
+def test_second_part_uploaded_separately_replaces_first(tmp_path: Path):
+    p1 = tmp_path / "Заказы_ч1.csv"
+    p1.write_text("Дата;Сумма\n01.03.2026;1\n02.03.2026;2\n", encoding="utf-8")
+    p2 = tmp_path / "Заказы_ч2.csv"
+    p2.write_text("Дата;Сумма\n03.03.2026;3\n", encoding="utf-8")
+    agen("source", "create", "orders", "--from", p1, "--upload")
+    out = agen("upload", "add", "orders", p2)
+    assert "Заменяет загрузку #1 Заказы_ч1.csv за тот же период 2026-03" in out
+    assert "Если это части одной выгрузки, загрузите их одной командой с --concat" in out
+    # Файл с другими столбцами на часть той же выгрузки не похож: подсказки нет.
+    p3 = tmp_path / "Заказы_март.csv"
+    p3.write_text("Дата;Сумма;Комментарий\n04.03.2026;4;новый\n", encoding="utf-8")
+    out = agen("upload", "add", "orders", p3)
+    assert "Заменяет загрузки #1 Заказы_ч1.csv, #2 Заказы_ч2.csv за тот же период 2026-03" in out
+    assert "--concat" not in out
+    # Загрузка на проверке ничего не заменяет, пока её не примут.
+    p4 = tmp_path / "Заказы_исправленные.csv"
+    p4.write_text("Дата;Сумма\n05.03.2026;5\n06.03.2026;6\n32.03.2026;7\n", encoding="utf-8")
+    out = agen("upload", "add", "orders", p4)
+    assert "на проверке" in out and "После принятия заменит загрузки #1 Заказы_ч1.csv, #2" in out
+    assert "Заменяет" not in out and "в историю не входят" not in out
+
+
+def test_ragged_rows(tmp_path: Path):
+    clean = tmp_path / "Заказы_2026-02.csv"
+    clean.write_text("Дата;Регион;Сумма\n01.02.2026;Москва;1;\n02.02.2026;Тула;2;\n", encoding="utf-8")
+    out = agen("source", "create", "orders", "--from", clean, "--upload")
+    assert "#1 Заказы_2026-02.csv: 2 строк" in out and "ragged" not in out and "полей больше" not in out
+    f = tmp_path / "Заказы_2026-03.csv"
+    f.write_text(
+        "Дата;Регион;Сумма\n01.03.2026;Москва;1;\n02.03.2026;Тула;2;лишнее\n03.03.2026;Псков;3;\n", encoding="utf-8"
+    )
+    r = runner.invoke(app, ["upload", "add", "orders", str(f)])
+    assert r.exit_code == 1 and "В строке 3 файла Заказы_2026-03.csv 4 полей" in r.output
+    assert "--ragged truncate" in r.output
+    out = agen("upload", "add", "orders", f, "--ragged", "truncate")
+    note = "В файле Заказы_2026-03.csv строк, где полей больше, чем в шапке: 1 (первая — строка 3)"
+    assert "#2 Заказы_2026-03.csv: 3 строк" in out and f"! {note}" in out
+    upload_id = agen("upload", "list", "orders").splitlines()[-1].split("[")[1].rstrip("]")
+    assert f"· {note}" in agen("upload", "show", upload_id)
+    # Параметр сохраняется в источнике, если задан при создании.
+    out = agen("source", "create", "orders2", "--from", f, "--ragged", "truncate")
+    assert "ragged 'truncate'" in out
+
+
+def test_validate_takes_sources_from_home(tmp_path: Path):
+    text = (EXAMPLE / "scenario.yaml").read_text(encoding="utf-8")
+    template = (ROOT / "examples" / "templates" / "synthetic.pptx").as_posix()
+    scenario = tmp_path / "сценарий.yaml"  # рядом нет sources.yaml
+    scenario.write_text(text.replace("../templates/synthetic.pptx", template), encoding="utf-8")
+    r = runner.invoke(app, ["validate", str(scenario)])
+    assert r.exit_code == 1 and "не описан" in r.output
+    agen("source", "import", EXAMPLE / "sources.yaml")
+    assert "Сценарий в порядке" in agen("validate", scenario)
+    r = runner.invoke(app, ["validate", str(scenario), "--no-home"])
+    assert r.exit_code == 1

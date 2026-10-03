@@ -1,21 +1,24 @@
 """``python -m autogenerator.theme шаблон.pptx`` — что приложение видит в шаблоне.
 
 Показывает размер слайда, макеты всех мастеров, какие макеты взяты под роли (титульный,
-заголовок и блок, два блока, …) и слайды шаблона с метками ``{{…}}``, графиками и таблицами.
-Шаблон не меняется: работа идёт с копией во временной папке.
+заголовок и блок, два блока, …), слайды-образцы с метками ``{{…}}``, графиками и таблицами,
+шрифты и отчёт проверки шаблона. Шаблон не меняется: работа идёт с копией во временной папке.
+С ``--out манифест.json`` копия сохраняется рядом (``манифест.template.pptx``): по манифесту
+отчёт собирает ``python -m autogenerator.render``.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from autogenerator.contracts import AgenError
-from autogenerator.contracts.theme import EMU_PER_INCH
 
 from .importer import import_template
+from .report import describe
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,41 +26,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("template")
     ap.add_argument("--out", help="сохранить манифест в JSON")
     ap.add_argument("--layouts", action="store_true", help="показать все макеты с плейсхолдерами")
+    ap.add_argument("--verbose", action="store_true", help="все метки и все заметки проверки")
     a = ap.parse_args(argv)
+    out = Path(a.out) if a.out else None
+    copy = out.with_name(out.stem + ".template.pptx").resolve() if out else None
+    if copy is not None and copy == Path(a.template).resolve():
+        print(f"Ошибка: рабочая копия перезаписала бы сам шаблон {copy}", file=sys.stderr)
+        return 1
     with tempfile.TemporaryDirectory() as tmp:
         try:
             m = import_template(a.template, tmp)
         except AgenError as e:
             print(f"Ошибка: {e}", file=sys.stderr)
             return 1
-    w, h = m.slide_width / EMU_PER_INCH, m.slide_height / EMU_PER_INCH
-    masters = len({lay.master for lay in m.layouts})
-    print(f"{Path(a.template).name}: слайд {w:.3f} × {h:.3f} дюйма, мастеров {masters}, макетов {len(m.layouts)}")
-    print("Роли макетов (предложены приложением):")
-    for r in m.roles:
-        slots = ", ".join(s.name for s in r.slots)
-        print(f"  {r.role:<22} → «{r.layout_name}» (id {r.layout_key}); области: {slots}")
-    if a.layouts:
-        print("Макеты:")
-        for lay in m.layouts:
-            phs = ", ".join(f"{p.type}#{p.idx}{'' if p.geometry else ' без геометрии'}" for p in lay.placeholders)
-            print(f"  [{lay.master}] {lay.name} (id {lay.key}{', preserve' if lay.preserve else ''}): {phs}")
-    if m.slides:
-        print(f"Слайды шаблона ({len(m.slides)}):")
-        for s in m.slides:
-            extra = []
-            if s.markers:
-                extra.append(f"метки: {', '.join(s.markers)}")
-            if s.charts:
-                extra.append(f"графиков {s.charts}")
-            if s.tables:
-                extra.append(f"таблиц {s.tables}")
-            print(f"  {s.number:>2}. id {s.slide_id} «{s.title or '—'}» {'; '.join(extra)}")
-    for n in m.notes:
-        print(f"Замечание: {n}")
-    if a.out:
-        Path(a.out).write_text(m.model_dump_json(indent=2), encoding="utf-8")
-        print(f"Манифест сохранён: {a.out}")
+        if out is not None and copy is not None:
+            # Манифест ссылается на рабочую копию: она переезжает из временной папки к нему.
+            shutil.copyfile(m.pptx_path, copy)
+            m.pptx_path = str(copy)
+    print(describe(m, layouts=a.layouts, verbose=a.verbose, name=Path(a.template).name))
+    if out is not None:
+        out.write_text(m.model_dump_json(indent=2), encoding="utf-8")
+        print(f"Манифест сохранён: {out} (рабочая копия шаблона: {copy})")
     return 0
 
 

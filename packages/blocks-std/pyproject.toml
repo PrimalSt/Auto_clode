@@ -1,7 +1,7 @@
 [project]
 name = "autogenerator-blocks-std"
 version = "0.1.0"
-description = "Встроенные блоки слайдов: текст, график, таблица; русские форматы чисел и дат."
+description = "Встроенные блоки слайдов: текст, график, таблица, метки, графики и таблицы слайдов-образцов; русские форматы чисел и дат."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -9,12 +9,16 @@ dependencies = [
     "python-pptx>=1.0.2",
     "jinja2>=3.1",
     "babel>=2.16",
+    "lxml>=5.3",
 ]
 
 [project.entry-points."autogenerator.blocks"]
 text = "autogenerator.blocks_std.text:TextBlock"
 chart = "autogenerator.blocks_std.chart:ChartBlock"
 table = "autogenerator.blocks_std.table:TableBlock"
+markers = "autogenerator.blocks_std.markers:MarkersBlock"
+chart_fill = "autogenerator.blocks_std.chart_fill:ChartFillBlock"
+table_fill = "autogenerator.blocks_std.table_fill:TableFillBlock"
 
 [build-system]
 requires = ["uv_build>=0.8.17,<0.10"]

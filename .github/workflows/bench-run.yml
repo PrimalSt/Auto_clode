@@ -1,0 +1,64 @@
+name: Бенчмарк запуска
+
+# Цель из PRD (раздел 9): отчёт по истории до 50 млн строк (используется до 10 столбцов,
+# дубликаты ищутся по всей истории) собирается не дольше 2 минут. История — 5 загрузок по
+# 10 млн строк, отчёт — в синтетическом шаблоне со слайдами-образцами (метки, графики,
+# таблица) и слайдами из макетов. Windows-машина GitHub (4 ядра, 16 ГБ) слабее компьютера
+# пользователя (32 ГБ), поэтому проверка идёт с запасом. Время на этих машинах заметно меняется
+# от запуска к запуску, поэтому холодный запуск дольше цели повторяется один раз (--retry):
+# настоящее замедление видно в обоих замерах, отчёт показывает оба.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+  pull_request:
+    paths:
+      - "packages/engine/**"
+      - "packages/steps-std/**"
+      - "packages/history/**"
+      - "packages/theme/**"
+      - "packages/render/**"
+      - "packages/blocks-std/**"
+      - "packages/worker/src/autogenerator/worker/run.py"
+      - "examples/templates/synthetic.pptx"
+      - "tools/bench_run.py"
+      - "tools/bench_preview.py"
+      - ".github/workflows/bench-run.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: Отчёт по истории 50 млн строк (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Состояние Microsoft Defender
+        shell: pwsh
+        run: Get-MpComputerStatus | Select-Object AMServiceEnabled, RealTimeProtectionEnabled | Format-List
+        continue-on-error: true
+      - name: Бенчмарк
+        env:
+          PYTHONUTF8: "1"
+        run: uv run python tools/bench_run.py --data "${{ runner.temp }}/bench-data" --report bench.md --check --retry --profile
+      - name: Отчёт
+        if: always()
+        shell: bash
+        run: test -f bench.md && cat bench.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-run-report
+          path: bench.md
+          if-no-files-found: ignore

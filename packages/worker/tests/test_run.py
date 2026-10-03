@@ -39,23 +39,36 @@ def test_example_report(tmp_path: Path):
     assert res.ok, res.errors
     assert res.period.key == "2026-03"
     assert res.output_path == str(tmp_path / "Отчёт_продажи_2026-03.pptx")
-    assert res.slides == 7
+    assert res.slides == 11
     texts = slide_texts(res.output_path)
-    assert texts[0].startswith("Продажи: март 2026")
-    assert "План месяца выполнен на 103,2%" in texts[1]
-    assert "К прошлому месяцу: +8,3%" in texts[1]
-    assert texts[6].startswith("План-факт: март 2026")
+    assert texts[0] == "Продажи | Март 2026"  # обложка — слайд шаблона с метками
+    assert "26,2 млн ₽" in texts[1] and "+8,3%" in texts[1] and "103% плана" in texts[1]
+    assert texts[8].startswith("План-факт: март 2026")
+    assert texts[10] == "Спасибо!"
     # Три месяца продаж с переименованными и переставленными столбцами прочитаны как один источник.
     assert [u["period"] for u in res.inputs["sales"]] == ["2026-01", "2026-02", "2026-03"]
     assert res.inputs["plan"][0]["period"] == "2026-Q1"
     assert res.workdir is None
 
 
+def test_slide_preview_computes_only_its_data(tmp_path: Path):
+    res = run(request(tmp_path, slide=2, preview=True, output=str(tmp_path / "slide.pptx")))
+    assert res.ok, res.errors
+    assert res.slides == 1
+    computed = {n.id for n in res.nodes if n.state == "ok"}
+    # Итоги: выручка со сравнением, выполнение плана и график по месяцам; план читается.
+    assert {"dataset:month_mix", "metric:revenue", "metric:plan_done", "input:plan"} <= computed
+    assert not computed & {"dataset:by_region", "dataset:top_managers", "metric:median_order"}
+    cover = run(request(tmp_path, slide=1, preview=True, output=str(tmp_path / "cover.pptx")))
+    assert cover.ok and slide_texts(cover.output_path) == ["Продажи | Март 2026"]
+    assert "plan" not in cover.inputs  # обложке нужен только период
+
+
 def test_other_period_and_workdir(tmp_path: Path):
     work = tmp_path / "work"
     res = run(request(tmp_path, period=Period.parse("2026-02"), workdir=str(work)))
     assert res.ok, res.errors
-    assert slide_texts(res.output_path)[0].startswith("Продажи: февраль 2026")
+    assert slide_texts(res.output_path)[0] == "Продажи | Февраль 2026"
     # Промежуточные данные остаются: каждый модуль можно перезапустить на них отдельно.
     for p in [
         "theme/manifest.json",

@@ -5,7 +5,7 @@
 («12 345,67», неразрывные пробелы, отрицательные в скобках), даты «дд.мм.гггг» и с временем,
 дубликаты заказов, возвраты, а у файлов разных месяцев переименованы и переставлены столбцы
 и добавлен лишний столбец. Корпоративный шаблон пользователя в репозиторий не кладётся;
-вместо него — синтетический шаблон 16:9.
+вместо него — синтетический шаблон 16:9 с теми же особенностями (``tools/make_template.py``).
 
 Запуск из корня репозитория::
 
@@ -14,19 +14,15 @@
 
 from __future__ import annotations
 
-import copy
 import random
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import xlsxwriter
-from lxml import etree
-from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import MSO_AUTO_SIZE
-from pptx.presentation import Presentation as PresentationT
-from pptx.util import Emu, Inches, Pt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from make_template import write_template
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
@@ -158,96 +154,12 @@ def write_plan(folder: Path, rnd: random.Random) -> None:
     print(f"{path.relative_to(ROOT)}: {r - 2} строк")
 
 
-# --- синтетический шаблон -----------------------------------------------------------------
-
-WIDTH, HEIGHT = Inches(13.333), Inches(7.5)
-ACCENTS = {
-    "accent1": "1F4E79",
-    "accent2": "F28C28",
-    "accent3": "2E8B57",
-    "accent4": "7F7F7F",
-    "accent5": "5B9BD5",
-    "accent6": "C00000",
-}
-A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
-
-
-def _scale_xfrm(root: etree._Element, fx: float) -> None:
-    """Растянуть по горизонтали все фигуры макета: шаблон python-pptx рассчитан на 4:3."""
-    for off in root.iter(f"{A}off"):
-        off.set("x", str(int(int(off.get("x", "0")) * fx)))
-    for ext in root.iter(f"{A}ext"):
-        if ext.get("cx") is not None:
-            ext.set("cx", str(int(int(ext.get("cx", "0")) * fx)))
-
-
-def _theme_colors(prs: PresentationT) -> None:
-    master_part = prs.slide_master.part
-    theme_part = next(r.target_part for r in master_part.rels.values() if r.reltype.endswith("/theme"))
-    root = etree.fromstring(theme_part.blob)
-    for name, rgb in ACCENTS.items():
-        el = root.find(f".//{A}clrScheme/{A}{name}")
-        if el is not None:
-            for child in list(el):
-                el.remove(child)
-            etree.SubElement(el, f"{A}srgbClr", val=rgb)
-    root.find(f".//{A}clrScheme").set("name", "Autogenerator")
-    theme_part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
-
-
-def _master_band(prs: PresentationT) -> None:
-    """Полоса акцентного цвета сверху и подпись в подвале на мастере: так видно, что отчёт
-    собран в шаблоне, а не в пустой презентации."""
-    tmp = prs.slides.add_slide(prs.slide_layouts[6])
-    band = tmp.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, WIDTH, Inches(0.18))
-    band.fill.solid()
-    band.fill.fore_color.rgb = RGBColor.from_string(ACCENTS["accent1"])
-    band.line.fill.background()
-    band.name = "Полоса шаблона"
-    note = tmp.shapes.add_textbox(Inches(0.5), Inches(7.05), Inches(6), Inches(0.35))
-    note.name = "Подпись шаблона"
-    note.text_frame.text = "Синтетический шаблон Autogenerator"
-    note.text_frame.word_wrap = True
-    note.text_frame.auto_size = MSO_AUTO_SIZE.NONE
-    run = note.text_frame.paragraphs[0].runs[0]
-    run.font.size = Pt(10)
-    run.font.color.rgb = RGBColor(0x7F, 0x7F, 0x7F)
-    tree = prs.slide_master.shapes._spTree
-    for sh in (band, note):
-        tree.append(copy.deepcopy(sh._element))
-    sld = prs.slides._sldIdLst[-1]
-    prs.part.drop_rel(sld.rId)
-    prs.slides._sldIdLst.remove(sld)
-
-
-def write_template(path: Path) -> None:
-    prs = Presentation()
-    fx = WIDTH / prs.slide_width
-    prs.slide_width, prs.slide_height = Emu(WIDTH), Emu(HEIGHT)
-    _scale_xfrm(prs.slide_master._element, fx)
-    for layout in prs.slide_master.slide_layouts:
-        _scale_xfrm(layout._element, fx)
-    _theme_colors(prs)
-    _master_band(prs)
-    # Слайд шаблона с метками — будущий слайд-образец (этап M3). В отчёт M0 он не попадает.
-    s = prs.slides.add_slide(prs.slide_layouts[5])
-    s.shapes.title.text = "Образец: продажи за {{Месяц}} {{Год}}"
-    box = s.shapes.add_textbox(Inches(0.6), Inches(2), Inches(8), Inches(1))
-    box.text_frame.text = "Выручка {{Выручка}} млн ₽, {{Прирост+}} к прошлому месяцу"
-    props = prs.core_properties
-    props.title = "Синтетический шаблон Autogenerator"
-    props.author = "Autogenerator"
-    props.created = props.modified = datetime(2026, 9, 30)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    prs.save(str(path))
-    print(f"{path.relative_to(ROOT)}: {len(prs.slide_master.slide_layouts)} макетов, 1 слайд-образец")
-
-
 def main() -> None:
     rnd = random.Random(2026)
     write_sales(EXAMPLES / "sales" / "data" / "sales", rnd)
     write_plan(EXAMPLES / "sales" / "data" / "plan", rnd)
-    write_template(EXAMPLES / "templates" / "synthetic.pptx")
+    out = EXAMPLES / "templates" / "synthetic.pptx"
+    print(f"{out.relative_to(ROOT)}: {write_template(out)}")
 
 
 if __name__ == "__main__":

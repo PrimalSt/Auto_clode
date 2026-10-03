@@ -50,7 +50,19 @@ print(res.metrics)   # revenue, revenue_prev, revenue_prev_change, revenue_prev_
 На больших данных превью входа строится по выборке (`res.sample`, `res.approximate`);
 `sample=1` — точно, без выборки.
 
-Также: `validate` (проверка без данных), `inspect` (структура файла), `modules`
+**Слайды и шаблон**:
+
+```python
+from autogenerator.api import check_theme, preview_slide, scaffold_theme
+
+m = check_theme("шаблон.pptx")                  # манифест: слайды, метки, графики, замечания
+print([str(i) for i in m.lint])
+print(scaffold_theme(m))                         # заготовка slides для сценария (YAML)
+res = preview_slide("examples/sales/scenario.yaml", 2, image="слайд.png")
+print(res.output_path, res.image_path, res.warnings)
+```
+
+Также: `describe_theme` (отчёт о шаблоне текстом), `validate` (проверка без данных), `inspect` (структура файла), `modules`
 (плагины и их состояние), `load_scenario`, `load_sources`.
 
 Тесты модуля: `uv run agen test api` (или `uv run pytest packages/api`).

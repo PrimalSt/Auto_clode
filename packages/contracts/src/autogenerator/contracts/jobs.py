@@ -35,6 +35,13 @@ class RunRequest(BaseModel):
         None, description="Кэш узлов между запусками и превью (папка cache в папке данных); пусто — без кэша"
     )
     temp_dir: str | None = Field(None, description="Временные файлы DuckDB и пользовательского кода")
+    slide: int | None = Field(
+        None, ge=1, description="Собрать только этот слайд сценария (номер среди включённых, с единицы): превью слайда"
+    )
+    preview: bool = Field(
+        False, description="Пробная сборка: непривязанные и пустые метки остаются в тексте и подсвечиваются"
+    )
+    image: str | None = Field(None, description="Нарисовать первый слайд собранного файла в этот .png")
 
 
 class PreviewRequest(BaseModel):

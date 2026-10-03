@@ -8,12 +8,13 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from autogenerator.contracts import ProgressCallback, ReaderPlugin, ReadOptions, ReadProgress
+from autogenerator.contracts import NoteCallback, ProgressCallback, ReaderPlugin, ReadOptions, ReadProgress
 from autogenerator.plugin_host import PluginRegistry
 
 
 class JsonLinesReader(ReaderPlugin):
-    """Файл .jsonl: первая строка — список названий столбцов, дальше — строки значений."""
+    """Файл .jsonl: первая строка — список названий столбцов, дальше — строки значений.
+    Значения сверх шапки отбрасываются, и об этом сообщается замечанием."""
 
     name = "jsonl"
     formats = ("jsonl",)
@@ -30,6 +31,7 @@ class JsonLinesReader(ReaderPlugin):
         options: ReadOptions,
         batch_rows: int = 100_000,
         progress: ProgressCallback | None = None,
+        note: NoteCallback | None = None,
     ) -> Iterator[pa.RecordBatch]:
         lines = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
         names, rows = lines[0], lines[1:]
@@ -39,6 +41,9 @@ class JsonLinesReader(ReaderPlugin):
             chunk = rows[i : i + batch_rows]
             cols = [pa.array([r[j] for r in chunk], pa.string()) for j in range(len(names))]
             yield pa.RecordBatch.from_arrays(cols, names=names)
+        longer = sum(len(r) > len(names) for r in rows)
+        if longer and note is not None:
+            note(f"{path.name}: строк длиннее шапки — {longer}")
 
 
 def write_jsonl(path: Path, names: list[str], rows: list[list[str | None]]) -> Path:

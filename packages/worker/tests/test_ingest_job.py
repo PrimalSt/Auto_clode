@@ -13,6 +13,7 @@ from autogenerator.contracts import (
     Period,
     PeriodFrom,
     PeriodUnit,
+    ReadOptions,
     SourceSpec,
 )
 from autogenerator.contracts.yaml_io import load_model_list
@@ -49,6 +50,28 @@ def test_draft_source_from_excel(tmp_path: Path):
     spec, snap = draft_source(EXAMPLE / "data" / "plan" / "План_2026-Q1.xlsx", "plan")
     assert snap.options.header_row == 2 and spec.period_column == "month"
     assert spec.period_type == PeriodUnit.QUARTER
+
+
+def test_xls_export_from_draft_to_upload(tmp_path: Path):
+    """Excel 97–2003: над шапкой — параметры отчёта, выгрузка — на двух листах с одной шапкой."""
+    xls = Path(__file__).resolve().parents[2] / "readers-std" / "tests" / "data" / "обращения.xls"
+    spec, snap = draft_source(xls, "tickets")
+    assert (snap.format, snap.options.header_row, snap.sheets) == ("xls", 5, ["Часть 1", "Часть 2"])
+    assert {c.name: c.dtype for c in spec.columns} == {
+        "Номер": DType.STRING,
+        "Тема": DType.STRING,
+        "Ответов": DType.INT,
+        "Часы": DType.FLOAT,
+        "Создано": DType.DATE,
+        "Закрыто": DType.DATETIME,
+    }
+    assert spec.period_column == "sozdano" and spec.period_type == PeriodUnit.MONTH
+    res = ingest_upload(
+        IngestRequest(source=spec, path=str(xls), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
+    )
+    assert res.snapshot.sample_rows == 0  # снимок по шапке, как у .xlsx
+    assert res.period.key == "2026-01" and res.upload.rows == 10
+    assert (res.profile["chasy"].min, res.profile["chasy"].max) == ("0.25", "12.75")
 
 
 # --- Выгрузки по образцу настоящих (синтетические данные) ------------------------------
@@ -130,3 +153,25 @@ def test_parts_are_concatenated(tmp_path: Path):
         )
     )
     assert res.upload.rows == 3 and res.period.key == "2026-03"
+
+
+def test_truncated_ragged_rows_are_a_warning(tmp_path: Path):
+    f = tmp_path / "Заказы_2026-03.csv"
+    f.write_text(
+        "Дата;Регион;Сумма\n01.03.2026;Москва;1;\n02.03.2026;Тула;2;лишнее\n03.03.2026;Псков;3;\n", encoding="utf-8"
+    )
+    with pytest.raises(AgenError, match="ragged: truncate"):
+        draft_source(f, "orders")
+    spec, _ = draft_source(f, "orders", options=ReadOptions(ragged="truncate"))
+    assert spec.options.ragged == "truncate"
+    res = ingest_upload(
+        IngestRequest(source=spec, path=str(f), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
+    )
+    note = (
+        "В файле Заказы_2026-03.csv строк, где полей больше, чем в шапке: 1 (первая — строка 3); "
+        "лишние поля отброшены (ragged: truncate)"
+    )
+    assert res.upload.rows == 3 and res.upload.options and res.upload.options.ragged == "truncate"
+    assert [i.message for i in res.issues if i.level == IssueLevel.WARNING] == [note]
+    # Замечание остаётся в снимке загрузки: его видно в записи и в agen upload show.
+    assert note in res.snapshot.notes

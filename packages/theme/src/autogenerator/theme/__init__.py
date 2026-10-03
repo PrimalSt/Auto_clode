@@ -1,6 +1,8 @@
-"""Импорт .pptx-шаблона: размер слайда, макеты и их роли, слайды шаблона, манифест
-(ARCHITECTURE.md, раздел 6.5)."""
+"""Импорт .pptx-шаблона: размер слайда, макеты и их роли, слайды-образцы, шрифты, проверка
+шаблона, манифест (ARCHITECTURE.md, раздел 6.5)."""
 
 from .importer import import_template, make_working_copy
+from .report import describe
+from .scaffold import scaffold
 
-__all__ = ["import_template", "make_working_copy"]
+__all__ = ["describe", "import_template", "make_working_copy", "scaffold"]

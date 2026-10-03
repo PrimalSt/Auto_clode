@@ -1,8 +1,10 @@
 """Код исполнителя: собирает модули обработки в задания ``run``, ``validate``, ``ingest``,
-``inspect`` (ARCHITECTURE.md, раздел 6.6). Модули обработки вместе импортирует только этот пакет."""
+``inspect``, ``import_theme``, ``slide_image`` (ARCHITECTURE.md, раздел 6.6). Модули обработки
+вместе импортирует только этот пакет."""
 
 from .ingest_job import draft_source, ingest_upload
 from .run import ManifestHistory, output_path, preview, run, validate
+from .theme_jobs import describe_theme, import_theme, scaffold_theme, slide_image
 from .tools import (
     coverage_report,
     default_period,
@@ -18,9 +20,11 @@ __all__ = [
     "ManifestHistory",
     "coverage_report",
     "default_period",
+    "describe_theme",
     "draft_source",
     "export_history",
     "history_frame",
+    "import_theme",
     "ingest_upload",
     "inspect",
     "load_scenario",
@@ -29,5 +33,7 @@ __all__ = [
     "preview",
     "rows_outside",
     "run",
+    "scaffold_theme",
+    "slide_image",
     "validate",
 ]

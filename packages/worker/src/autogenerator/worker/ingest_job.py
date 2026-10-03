@@ -147,6 +147,9 @@ def ingest_upload(
             if reader.sample_reads_all:
                 c.dtype = source.column(cid).dtype
             c.profile = profile.get(cid)
+    # Замечания читателя (отброшенные лишние поля) остаются и в снимке: их видно в записи загрузки.
+    snap.notes += res.notes
+    issues += [Issue(level=IssueLevel.WARNING, node=node, message=n) for n in res.notes]
 
     rejects = Path(res.rejects_uri).name if res.rejects_uri else "rejects.parquet"
     for ci in res.cast_issues:

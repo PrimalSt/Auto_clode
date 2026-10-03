@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -45,6 +46,11 @@ class PeriodFrom(StrEnum):
     загрузке, а столбец периода заполняется началом периода у всех строк."""
 
 
+RaggedRows = Literal["error", "truncate"]
+"""Что делать со строкой CSV, в которой полей больше, чем в шапке: ``error`` — остановить
+чтение с номером строки, ``truncate`` — отбросить лишние поля и сказать, у скольких строк."""
+
+
 class ReadOptions(BaseModel):
     """Параметры чтения файла. Хранятся в источнике, чтобы следующая выгрузка читалась так же.
 
@@ -66,6 +72,12 @@ class ReadOptions(BaseModel):
         None,
         description="Лист Excel: имя, номер с нуля или список листов одной выгрузки; пусто — первый лист и все "
         "следующие листы с такой же шапкой (выгрузки больше 1 048 576 строк Excel разбивает на листы)",
+    )
+    ragged: RaggedRows = Field(
+        "error",
+        description="Строки CSV, где полей больше, чем в шапке: error — ошибка с номером строки, truncate — "
+        "отбросить лишние поля (число таких строк попадёт в замечания загрузки). Пустое лишнее поле "
+        "(разделитель в конце строки) данных не несёт и отбрасывается всегда",
     )
 
     def merged(self, other: ReadOptions | None) -> ReadOptions:
@@ -114,7 +126,7 @@ class SourceSpec(BaseModel):
     id: str
     name: str
     version: int = 1
-    format: str | None = Field(None, description="csv, xlsx; пусто — определить по файлу")
+    format: str | None = Field(None, description="csv, xlsx, xls; пусто — определить по файлу")
     options: ReadOptions = Field(default_factory=ReadOptions)
     period_column: str
     period_type: PeriodUnit = PeriodUnit.MONTH

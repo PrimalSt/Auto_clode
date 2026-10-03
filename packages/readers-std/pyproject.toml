@@ -13,6 +13,7 @@ dependencies = [
 [project.entry-points."autogenerator.readers"]
 csv = "autogenerator.readers_std.csv_reader:CsvReader"
 xlsx = "autogenerator.readers_std.excel_reader:ExcelReader"
+xls = "autogenerator.readers_std.xls_reader:XlsReader"
 
 [build-system]
 requires = ["uv_build>=0.8.17,<0.10"]

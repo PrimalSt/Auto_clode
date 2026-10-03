@@ -1,6 +1,9 @@
-# Ежемесячный отчёт по продажам — пример сценария (этапы M0–M2).
+# Ежемесячный отчёт по продажам — пример сценария (этапы M0–M3).
 # Запуск из корня репозитория:  uv run agen run examples/sales/scenario.yaml
 # Превью любого узла:           uv run agen preview examples/sales/scenario.yaml dataset:plan_fact
+# Слайды — из макетов шаблона (layout) и готовые слайды шаблона (example): у них метки {{…}}
+# получают значения, графики и таблица — данные. Что есть в шаблоне: uv run agen theme check
+# examples/templates/synthetic.pptx
 # Выгрузки берутся из data/<вход>/ по порядку имён; отчётный период по умолчанию —
 # последний месяц основного входа (март 2026).
 
@@ -63,6 +66,19 @@ datasets:
       FROM goal LEFT JOIN fact USING (region)
       ORDER BY done DESC
 
+  # Крупные (от 100 тыс. ₽) и остальные заказы по месяцам: столбцы с накоплением и доля линией.
+  - id: month_mix
+    label: Крупные и остальные заказы по месяцам квартала
+    window: quarter_to_date
+    query: |
+      SELECT date_trunc('month', date) AS month,
+             sum(CASE WHEN amount_net >= 100000 THEN amount_net ELSE 0 END) AS big,
+             sum(CASE WHEN amount_net < 100000 THEN amount_net ELSE 0 END) AS small,
+             sum(CASE WHEN amount_net >= 100000 THEN amount_net ELSE 0 END) / sum(amount_net) AS big_share
+      FROM sales
+      GROUP BY 1
+      ORDER BY 1
+
   # Динамика: месяцы квартала становятся столбцами сводной таблицы.
   - id: region_months
     label: Выручка регионов по месяцам квартала
@@ -86,24 +102,48 @@ metrics:
   - id: big_orders
     window: report_period
     query: "SELECT count(*) FROM sales WHERE amount_net >= 100000"
+  - id: top_region_share
+    window: report_period
+    query: "SELECT max(r) / sum(r) FROM (SELECT sum(amount_net) AS r FROM sales GROUP BY region)"
+
+# Метки слайдов шаблона на всю презентацию; слайд может привязать метку по-своему.
+markers:
+  Месяц: period.month          # «март»
+  Год: period.year
 
 slides:
-  - layout: title
+  # Обложка — слайд шаблона с id 256: «{{Месяц}} {{Год}}».
+  - example: 256
+    markers:
+      Месяц: period.Month        # с заглавной буквы: «Март»
+
+  # Итоги — слайд шаблона 257: три метки и комбинированный график (2 серии столбцами,
+  # линия на второй оси).
+  - example: 257
+    markers:
+      Выручка: { metric: revenue, scale: million, decimals: 1 }      # «{{Выручка}} млн ₽»
+      # «%» уже в шаблоне после метки, поэтому значение подставляется без своего «%». В отчёте
+      # за первый месяц истории прошлого месяца нет: метка остаётся пустой, а не останавливает сборку.
+      Прирост+: { metric: revenue_prev_change_pct, percent: true, sign: true, empty: blank }
+      Доля: { metric: plan_done, percent: true, decimals: 0 }       # «{{Доля}}% плана выполнено»
     blocks:
-      - { type: text, slot: title, text: "Продажи: {{ period.label }}" }
-      - { type: text, slot: subtitle, text: "Ежемесячный отчёт · собран Autogenerator" }
+      - type: chart_fill
+        shape: 6                    # id графика на слайде шаблона
+        dataset: month_mix
+        categories: month
+        series:
+          - { column: big, name: "Крупные заказы", scale: million }
+          - { column: small, name: "Остальные", scale: million }
+          - { column: big_share, name: "Доля крупных", number_format: "0%" }
 
   - layout: title_and_content
     blocks:
-      - { type: text, slot: title, text: "Итоги: {{ period.label }}" }
+      - { type: text, slot: title, text: "Заказы: {{ period.label }}" }
       - type: text
         slot: body
         text: |-
-          Выручка без НДС: {{ metrics.revenue | money(scale='million', decimals=1) }}
-          К прошлому месяцу: {{ metrics.revenue_prev_change_pct | percent(sign=true) }}
           Заказов: {{ metrics.orders | number }}, из них от 100 тыс. ₽: {{ metrics.big_orders | number }}
           Медианный заказ: {{ metrics.median_order | money }}
-          План месяца выполнен на {{ metrics.plan_done | percent }}
 
   - layout: title_and_content
     blocks:
@@ -116,6 +156,14 @@ slides:
         series: [{ column: revenue, name: "Выручка без НДС, млн ₽" }]
         number_format: "#,##0.0,,"   # ",," — в миллионах
         data_labels: true
+
+  # Регионы — слайд шаблона 258: круговая диаграмма и доля первого региона. Метка {{Доля}}
+  # есть и на слайде 257, но здесь значит другое: привязка на уровне слайда.
+  - example: 258
+    markers:
+      Доля: { metric: top_region_share, percent: true, decimals: 0 }
+    blocks:
+      - { type: chart_fill, shape: 4, dataset: by_region, categories: region, series: [{ column: revenue, name: Выручка }] }
 
   - layout: title_and_two_content
     blocks:
@@ -177,3 +225,16 @@ slides:
           - { column: fact, header: "Факт без НДС, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
           - { column: plan, header: "План, млн ₽", format: { kind: number, scale: million, decimals: 1 } }
           - { column: done, header: Выполнение, format: { kind: percent } }
+
+  # Таблица шаблона (слайд 261): регионы и месяцы квартала из сводной таблицы; столбцы месяцев
+  # добавляются сами, их заголовки — «янв. 2026», ….
+  - example: 261
+    blocks:
+      - type: table_fill
+        shape: 3
+        dataset: region_months
+        columns: [{ column: region, header: Регион }]
+        other_columns: true
+        number: { scale: million, decimals: 1 }
+
+  - example: 263                  # «Спасибо!»

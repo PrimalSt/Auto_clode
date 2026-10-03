@@ -7,6 +7,7 @@ CLI вызывает движок напрямую через фасад ``api``
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,10 +16,11 @@ from typing import Annotated
 import typer
 
 from autogenerator import api
-from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RunResult
+from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RaggedRows, RunResult
 
 from .data import history, source_app, upload_app
-from .output import LEVEL_MARK, fail, home_option, print_snapshot, read_options_from, utf8_output
+from .output import LEVEL_MARK, RAGGED_HELP, fail, home_option, print_snapshot, read_options_from, utf8_output
+from .theme import theme_app
 
 app = typer.Typer(
     name="agen",
@@ -30,6 +32,7 @@ app = typer.Typer(
 
 app.add_typer(source_app, name="source")
 app.add_typer(upload_app, name="upload")
+app.add_typer(theme_app, name="theme")
 app.command()(history)
 
 
@@ -63,7 +66,7 @@ def _print_result(res: RunResult, verbose: bool) -> None:
             continue
         typer.echo(f"  {LEVEL_MARK[i.level]} {i}")
     if res.output_path:
-        typer.echo(f"Готово: {res.output_path} ({res.slides} слайдов, {res.seconds:.1f} с)")
+        typer.echo(f"Готово: {res.output_path} ({_slides(res.slides)}, {res.seconds:.1f} с)")
     if res.workdir:
         typer.echo(f"Рабочая папка: {res.workdir}")
 
@@ -138,10 +141,13 @@ def validate(
     scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
     sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
     theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx")] = None,
+    no_home: Annotated[bool, typer.Option("--no-home", help="Не брать источники из папки данных")] = False,
+    home: Annotated[Path | None, home_option] = None,
 ) -> None:
-    """Проверить сценарий без данных: ссылки, плагины, параметры, макеты шаблона."""
+    """Проверить сценарий без данных: ссылки, плагины, параметры, макеты шаблона и
+    слайды-образцы. Источники, которых нет в --sources, берутся из папки данных."""
     try:
-        issues = api.validate(scenario, sources=sources, theme=theme)
+        issues = api.validate(scenario, sources=sources, theme=theme, home=home, use_home=False if no_home else None)
     except AgenError as e:
         _fail(e)
         return
@@ -152,6 +158,14 @@ def validate(
         typer.echo(f"Ошибок: {len(errors)}", err=True)
         raise typer.Exit(1)
     typer.echo("Сценарий в порядке.")
+
+
+def _slides(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} слайд"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} слайда"
+    return f"{n} слайдов"
 
 
 def _num(n: int | None, approx: bool) -> str:
@@ -230,7 +244,10 @@ def preview(
     scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
     target: Annotated[
         str,
-        typer.Argument(help="Что показать: вход (sales), вход после шага (sales/dedupe), набор или показатель"),
+        typer.Argument(
+            help="Что показать: вход (sales), вход после шага (sales/dedupe), набор (dataset:…), показатель "
+            "(metric:…) или слайд (slide:3 — пробная сборка одного слайда)"
+        ),
     ],
     sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
     data: Annotated[Path | None, typer.Option(help="Папка выгрузок: по подпапке на вход")] = None,
@@ -249,9 +266,35 @@ def preview(
     accept_cast_errors: Annotated[bool, typer.Option(help="Принять загрузки с нераспознанными значениями")] = False,
     no_home: Annotated[bool, typer.Option("--no-home", help="Не брать историю из папки данных")] = False,
     home: Annotated[Path | None, home_option] = None,
+    theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx (для slide:N)")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Файл .pptx пробной сборки (slide:N)")] = None,
+    image: Annotated[
+        Path | None,
+        typer.Option(help="Нарисовать слайд в .png (slide:N): PowerPoint, иначе LibreOffice"),
+    ] = None,
 ) -> None:
     """Превью узла сценария: первые строки и число строк до и после каждого шага, набор
-    данных или значение показателя. На больших данных превью входа — по выборке."""
+    данных или значение показателя. На больших данных превью входа — по выборке.
+
+    slide:N — пробная сборка одного слайда в .pptx (и картинка с --image): непривязанные и
+    пустые метки остаются в тексте и подсвечиваются."""
+    if target.startswith("slide:"):
+        _preview_slide(
+            scenario,
+            target,
+            sources,
+            data,
+            input,
+            period,
+            theme,
+            output,
+            image,
+            workdir,
+            accept_cast_errors,
+            home,
+            no_home,
+        )
+        return
     try:
         res = api.preview(
             scenario,
@@ -278,21 +321,68 @@ def preview(
         raise typer.Exit(1)
 
 
+def _preview_slide(
+    scenario: Path,
+    target: str,
+    sources: Path | None,
+    data: Path | None,
+    input: list[str] | None,
+    period: str | None,
+    theme: Path | None,
+    output: Path | None,
+    image: Path | None,
+    workdir: Path | None,
+    accept_cast_errors: bool,
+    home: Path | None,
+    no_home: bool,
+) -> None:
+    number = target.removeprefix("slide:")
+    if not number.isdigit() or int(number) < 1:
+        raise typer.BadParameter("slide:N — номер слайда сценария с единицы", param_hint="TARGET")
+    try:
+        res = api.preview_slide(
+            scenario,
+            int(number),
+            sources=sources,
+            inputs=_parse_inputs(input or []),
+            data_dir=data,
+            theme=theme,
+            period=period,
+            output=output,
+            image=image,
+            workdir=workdir,
+            accept_cast_errors=accept_cast_errors,
+            home=home,
+            use_home=False if no_home else None,
+        )
+    except AgenError as e:
+        _fail(e)
+        return
+    _print_result(res, verbose=False)
+    if res.image_path:
+        note = f" ({res.image_note})" if res.image_note else ""
+        typer.echo(f"Картинка: {res.image_path}{note}")
+    if not res.output_path:
+        typer.echo("Слайд не собран.", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def inspect(
     file: Annotated[Path, typer.Argument(help="Файл выгрузки: CSV или Excel")],
-    format: Annotated[str | None, typer.Option(help="csv или xlsx")] = None,
+    format: Annotated[str | None, typer.Option(help="csv, xlsx или xls")] = None,
     encoding: Annotated[str | None, typer.Option(help="utf-8, utf-8-sig, cp1251; по умолчанию — определить")] = None,
     delimiter: Annotated[str | None, typer.Option(help="Разделитель CSV; tab — табуляция")] = None,
     no_quote: Annotated[bool, typer.Option("--no-quote", help="В CSV нет кавычек")] = False,
     header_row: Annotated[int | None, typer.Option(help="Строка заголовков, с единицы; по умолчанию — найти")] = None,
     sheet: Annotated[list[str] | None, typer.Option(help="Лист Excel (имя или номер с нуля); можно несколько")] = None,
+    ragged: Annotated[RaggedRows | None, typer.Option(help=RAGGED_HELP)] = None,
     preview: Annotated[int, typer.Option(help="Показать первые N строк")] = 0,
     no_profile: Annotated[bool, typer.Option("--no-profile", help="Без профиля столбцов")] = False,
     json: Annotated[bool, typer.Option("--json", help="Снимок структуры в JSON")] = False,
 ) -> None:
     """Структура файла выгрузки: как он прочитан, типы и профиль столбцов по выборке."""
-    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
+    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet, ragged)
     try:
         snap = api.inspect(file, opts, format, profile=not no_profile)
     except AgenError as e:
@@ -332,6 +422,14 @@ def _repo_root() -> Path | None:
 def test(
     ctx: typer.Context,
     module: Annotated[str, typer.Argument(help="Модуль: engine, ingest, render, …")],
+    template: Annotated[
+        Path | None,
+        typer.Option(
+            "--template",
+            help="Приёмочный тест на своём шаблоне .pptx (модуль worker): все метки, графики и таблицы "
+            "заполняются пробными значениями и проверяются",
+        ),
+    ] = None,
 ) -> None:
     """Прогнать тесты модуля (режим разработчика: работает в копии исходников)."""
     root = _repo_root()
@@ -344,7 +442,18 @@ def test(
         known = ", ".join(sorted(p.name for p in (root / "packages").iterdir() if p.is_dir()))
         typer.echo(f"Нет модуля «{module}». Есть: {known}", err=True)
         raise typer.Exit(1)
-    code = subprocess.call([sys.executable, "-m", "pytest", str(pkg), *ctx.args], cwd=root)
+    target, env = str(pkg), None
+    if template is not None:
+        # Шаблон собирают theme и render вместе, а это делает только worker (ARCHITECTURE.md, раздел 13).
+        if pkg.name != "worker":
+            typer.echo("--template — приёмочный тест шаблона, он есть только у модуля worker", err=True)
+            raise typer.Exit(1)
+        if not template.is_file():
+            typer.echo(f"Шаблон не найден: {template}", err=True)
+            raise typer.Exit(1)
+        target = str(pkg / "tests" / "test_template.py")
+        env = {**os.environ, "AGEN_TEST_TEMPLATE": str(template.resolve())}
+    code = subprocess.call([sys.executable, "-m", "pytest", target, *ctx.args], cwd=root, env=env)
     raise typer.Exit(code)
 
 

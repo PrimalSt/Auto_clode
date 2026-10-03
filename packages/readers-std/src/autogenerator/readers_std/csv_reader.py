@@ -10,6 +10,11 @@
 в Windows-1251 перекодируются порциями в памяти, без временного файла. Разделитель —
 тот, что делит строки на одинаковое число полей; строка заголовков — первая, где
 большинство ячеек заполнено текстом (над шапкой бывает заголовок отчёта).
+
+Строка, где полей больше, чем в шапке, — ошибка с номером строки; с ``ragged: truncate``
+лишние поля отбрасываются, а число таких строк сообщается замечанием. Пустое лишнее поле —
+разделитель в конце каждой строки, как в некоторых выгрузках, — данных не несёт и
+отбрасывается молча.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import pyarrow as pa
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
+    NoteCallback,
     ProgressCallback,
     ReaderPlugin,
     ReadOptions,
@@ -45,6 +51,12 @@ PROBE_BYTES = 1 << 20
 HEAD_TEXT_BYTES = 256 << 10
 DELIMITERS = ";\t|,"
 CP1251_NAMES = {"cp1251", "windows-1251", "win-1251", "1251"}
+SPARE_COLUMN = "__agen_spare__"
+"""Начало названий запасных столбцов справа от шапки."""
+SPARE_COLUMNS = (1, 8)
+"""Сколько запасных столбцов справа от шапки пробовать при разборе порции: в них попадают
+лишние поля строк. Обычно хватает одного (разделитель в конце строки); если в какой-то
+строке лишних полей больше, чем запасных столбцов, порция проверяется построчно."""
 
 
 # --- кодировка ---------------------------------------------------------------------
@@ -332,14 +344,46 @@ def _chunks(
             first = None
 
 
-def _locate_ragged(data: bytes, first_line: int, delimiter: str, quote: str | None, width: int) -> tuple[int, int]:
-    text = data.decode("utf-8", errors="replace")
-    lines = text.splitlines(keepends=True)
-    reader = csv.reader(lines, delimiter=delimiter, quotechar=quote or "\x00")
-    for row in reader:
-        if len(row) > width:
-            return first_line + reader.line_num - 1, len(row)
-    return first_line, width + 1
+def _locate_ragged(data: bytes, delimiter: str, quote: str | None, width: int) -> tuple[int, int, int]:
+    """Строки порции длиннее шапки, в лишних полях которых есть данные: сколько их, где
+    начинается первая (строк от начала порции) и сколько в ней полей. Пустые лишние поля
+    (разделитель в конце строки) не в счёт. Если длинных строк не нашлось вовсе, хотя Polars
+    их увидел (кавычки поняты по-разному), считается одна — в начале порции: отбрасывать
+    поля молча нельзя.
+
+    Номер строки файла здесь не нужен: его подсчёт читает файл от начала, а построчная
+    проверка бывает у каждой порции."""
+    # Строки делятся только по \n, как у Polars и в номерах строк файла (splitlines делит
+    # ещё и по \x0c, \x85, \u2028).
+    text = io.StringIO(data.decode("utf-8", errors="replace"), newline="\n")
+    reader = csv.reader(text, delimiter=delimiter, quotechar=quote or "\x00")
+    count, at, got, longer, start = 0, 0, width + 1, False, 0
+    try:
+        for row in reader:
+            if len(row) > width:
+                longer = True
+                if any(row[width:]):
+                    if not count:
+                        # Строка с переводом строки в кавычках начинается раньше, чем кончается.
+                        at, got = start, len(row)
+                    count += 1
+            start = reader.line_num
+    except csv.Error:
+        pass  # дальше модуль csv строку не разобрал: в счёт идёт то, что прочитано до неё
+    if not longer:
+        count = 1
+    return count, at, got
+
+
+def _ragged_error(path: Path, line: int, got: int, width: int) -> AgenError:
+    return AgenError(
+        ErrorCode.FILE_FORMAT,
+        f"В строке {line} файла {path.name} {got} полей, а в шапке {width}",
+        details={"line": line},
+        hint="Проверьте разделитель (delimiter) и кавычки: возможно, разделитель встречается внутри "
+        "текста без кавычек. Если лишние поля можно отбросить, укажите ragged: truncate в параметрах "
+        "чтения источника или --ragged truncate.",
+    )
 
 
 def _locate_quotes(data: bytes, first_line: int, quote: str | None) -> int:
@@ -394,7 +438,14 @@ class CsvReader(ReaderPlugin):
             rows = _split(lines[:60], delimiter, quote)
             width = data_width(rows[: min(len(rows), 60)])
             header_row = detect_header_row(rows, width) or 1
-        return ReadOptions(encoding=encoding, delimiter=delimiter, quote=quote, header_row=header_row, sheet=None)
+        return ReadOptions(
+            encoding=encoding,
+            delimiter=delimiter,
+            quote=quote,
+            header_row=header_row,
+            sheet=None,
+            ragged=options.ragged,
+        )
 
     def columns(self, path: Path, options: ReadOptions) -> list[str]:
         if not (options.encoding and options.delimiter and options.header_row):
@@ -415,7 +466,43 @@ class CsvReader(ReaderPlugin):
             ) from e
         raise AgenError(ErrorCode.FILE_FORMAT, f"В файле {path.name} нет строки заголовков {options.header_row}")
 
-    def _parse(self, path: Path, chunk: _Chunk, names: list[str], opts: ReadOptions) -> pl.DataFrame:
+    def _parse(self, path: Path, chunk: _Chunk, names: list[str], opts: ReadOptions) -> tuple[pl.DataFrame, int]:
+        """Порция в таблицу и число строк, у которых отброшены лишние поля с данными.
+
+        Справа от шапки разбираются запасные столбцы: лишние поля видны без разбора строк в
+        Python, и разделитель в конце каждой строки не замедляет чтение. Сначала пробуется
+        один запасной столбец, потом несколько; если в какой-то строке лишних полей ещё
+        больше, порция проверяется построчно и читается заново с отбрасыванием лишнего.
+        Лишние поля с данными — ошибка, если не задано ``ragged: truncate``.
+        """
+        assert opts.delimiter
+        width = len(names)
+        found: tuple[int, int, int] | None = None
+        for spare in SPARE_COLUMNS:
+            extra = [f"{SPARE_COLUMN}{i}" for i in range(spare)]
+            df = self._read(path, chunk, [*names, *extra], opts, truncate=False)
+            if df is not None:
+                dropped = int(df.select(pl.any_horizontal(pl.col(extra).fill_null("") != "").sum()).item())
+                df = df.drop(extra)
+                break
+        else:
+            found = _locate_ragged(chunk.data, opts.delimiter, opts.quote, width)
+            dropped = found[0]
+        if dropped and opts.ragged != "truncate":
+            _, at, got = found or _locate_ragged(chunk.data, opts.delimiter, opts.quote, width)
+            raise _ragged_error(path, chunk.first_line(path) + at, got, width)
+        if df is None:
+            df = self._read(path, chunk, names, opts, truncate=True)
+            if df is None:
+                raise AgenError(
+                    ErrorCode.FILE_FORMAT, f"Не удалось прочитать {path.name} около строки {chunk.first_line(path)}"
+                )
+        return df, dropped
+
+    def _read(
+        self, path: Path, chunk: _Chunk, names: list[str], opts: ReadOptions, truncate: bool
+    ) -> pl.DataFrame | None:
+        """Разбор порции Polars; ``None`` — в какой-то строке полей больше, чем столбцов."""
         assert opts.delimiter
         try:
             return pl.read_csv(
@@ -425,8 +512,11 @@ class CsvReader(ReaderPlugin):
                 separator=opts.delimiter,
                 quote_char=opts.quote or None,
                 raise_if_empty=False,
-                truncate_ragged_lines=False,
+                truncate_ragged_lines=truncate,
             )
+        except pl.exceptions.SchemaError:
+            # Так Polars отвечает, если лишние поля уже в первой строке порции.
+            return None
         except pl.exceptions.ComputeError as e:
             msg = str(e)
             if "utf-8" in msg.lower() or "utf8" in msg.lower():
@@ -439,14 +529,7 @@ class CsvReader(ReaderPlugin):
                     "или --encoding cp1251.",
                 ) from e
             if "more fields" in msg:
-                line, got = _locate_ragged(chunk.data, chunk.first_line(path), opts.delimiter, opts.quote, len(names))
-                raise AgenError(
-                    ErrorCode.FILE_FORMAT,
-                    f"В строке {line} файла {path.name} {got} полей, а в шапке {len(names)}",
-                    details={"line": line},
-                    hint="Проверьте разделитель (delimiter) и кавычки: возможно, разделитель встречается внутри "
-                    "текста без кавычек.",
-                ) from e
+                return None
             if "malformed" in msg.lower() or "quote" in msg.lower():
                 line = _locate_quotes(chunk.data, chunk.first_line(path), opts.quote)
                 raise AgenError(
@@ -464,18 +547,29 @@ class CsvReader(ReaderPlugin):
         options: ReadOptions,
         batch_rows: int = 100_000,
         progress: ProgressCallback | None = None,
+        note: NoteCallback | None = None,
     ) -> Iterator[pa.RecordBatch]:
         opts = options if options.encoding and options.delimiter and options.header_row else self.sniff(path, options)
-        assert opts.encoding and opts.header_row
+        assert opts.encoding and opts.delimiter and opts.header_row
         names = self.columns(path, opts)
         total = os.path.getsize(path)
         chunks = read_ahead(_chunks(path, opts.encoding, opts.header_row, opts.quote, self.chunk_bytes), depth=2)
+        dropped = first = 0
         for chunk in chunks:
-            df = self._parse(path, chunk, names, opts)
+            df, n = self._parse(path, chunk, names, opts)
+            if n and not dropped:
+                at = _locate_ragged(chunk.data, opts.delimiter, opts.quote, len(names))[1]
+                first = chunk.first_line(path) + at
+            dropped += n
             if progress is not None:
                 progress(ReadProgress("чтение", chunk.consumed, total, "bytes"))
             if df.height:
                 yield from df.to_arrow(compat_level=pl.CompatLevel.newest()).to_batches(max_chunksize=batch_rows)
+        if dropped and note is not None:
+            note(
+                f"В файле {path.name} строк, где полей больше, чем в шапке: {dropped} (первая — строка {first}); "
+                "лишние поля отброшены (ragged: truncate)"
+            )
 
     def sample(self, path: Path, options: ReadOptions, rows: int = 10_000) -> SampleTable:
         """Начало файла плюс порции из середины и конца (типы в конце выгрузки бывают другими)."""
@@ -488,7 +582,7 @@ class CsvReader(ReaderPlugin):
         head_end = 0
         read_rows = 0
         for chunk in _chunks(path, opts.encoding, opts.header_row, opts.quote, min(self.chunk_bytes, PROBE_BYTES)):
-            df = self._parse(path, chunk, names, opts)
+            df, _ = self._parse(path, chunk, names, opts)
             read_rows += df.height
             head.append(df.head(rows - got))
             got += head[-1].height
@@ -530,6 +624,6 @@ class CsvReader(ReaderPlugin):
             return None
         try:
             # Кусок мог начаться внутри поля в кавычках: тогда такой кусок просто пропускаем.
-            return self._parse(path, _Chunk(text.encode("utf-8"), start, start), names, opts)
+            return self._parse(path, _Chunk(text.encode("utf-8"), start, start), names, opts)[0]
         except AgenError:
             return None

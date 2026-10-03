@@ -47,6 +47,16 @@ def test_unknown_format(tmp_path: Path, registry, jsonl):
         inspect_file(f, registry)
 
 
+def test_office_document_that_no_reader_opens(tmp_path: Path, registry):
+    # Подпись двоичного документа Office (OLE2): книгу .xls узнал бы читатель, а это
+    # документ Word, письмо Outlook или книга с паролем.
+    f = tmp_path / "a.xls"
+    f.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512)
+    with pytest.raises(AgenError, match="не читается как книга Excel") as e:
+        inspect_file(f, registry)
+    assert "пароль" in (e.value.hint or "")
+
+
 def test_write_partitions_by_month(tmp_path: Path, registry, jsonl):
     f = jsonl(
         tmp_path / "a.jsonl",
@@ -227,6 +237,24 @@ def test_parts_of_one_export_become_one_upload(tmp_path: Path, registry, jsonl):
     rejects = pl.read_parquet(res.rejects_uri)
     assert res.rejects_uri.endswith("/rejects")
     assert rejects["_file"].to_list() == ["b.jsonl"] and rejects["_row"].to_list() == [4]
+
+
+def test_reader_notes_go_to_result(tmp_path: Path, registry, jsonl):
+    """Замечания читателя (например, отброшенные лишние поля) не теряются: они в итоге
+    записи, по файлу выгрузки."""
+    a = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.03.2026", "1", "лишнее"], ["02.03.2026", "2"]])
+    b = jsonl(tmp_path / "b.jsonl", ["Дата", "Сумма"], [["03.03.2026", "3"]])
+    res = write_upload(
+        a,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        more=[FilePart(b, {"Дата": "date", "Сумма": "amount"})],
+    )
+    assert res.rows == 3 and res.notes == ["a.jsonl: строк длиннее шапки — 1"]
 
 
 def test_fixed_period_for_snapshot_exports(tmp_path: Path, registry, jsonl):

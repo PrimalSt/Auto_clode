@@ -152,7 +152,7 @@ class _Engine:
         self.values: dict[tuple[str, str], float | int | None] = {}
         self.read_rows: dict[str, int] = {}
         self._coverage_warned: set[tuple[str, DateSpan]] = set()
-        self.needed = plan.closure(opts.nodes) if opts.nodes else None
+        self.needed = plan.closure(opts.nodes) if opts.nodes is not None else None
         self.periods = self.requested_periods()
 
     # --- служебное ------------------------------------------------------------------
