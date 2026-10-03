@@ -306,7 +306,9 @@ def reconcile(
     unmapped = [
         c.source_name for c in snapshot.columns if c.source_name not in mapping and c.source_name not in proposed
     ]
-    deps = {c: list((dependents or {}).get(c, [])) for c in missing_required if (dependents or {}).get(c)}
+    # кто зависит от столбцов, которых нет: и тех, что остановили загрузку, и тех, по которым нужен выбор
+    asked = [c.id for c in missing if c.id in review or c.id in missing_required]
+    deps = {c: list((dependents or {}).get(c, [])) for c in asked if (dependents or {}).get(c)}
     for cid in missing_required:
         spec = source.column(cid)
         what = "столбца периода" if cid == source.period_column else "столбца"

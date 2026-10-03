@@ -63,11 +63,14 @@ class ThemeImport:
 
     record: ThemeRecord
     skipped: bool = False
-    """Тот же файл уже текущая версия шаблона: новой версии нет."""
+    """Новой версии нет: тот же файл уже загружен (``matched``) или роли не изменились."""
+    matched: int | None = None
+    """Версия шаблона с тем же файлом, если файл уже был загружен."""
     scenarios: list[str] = field(default_factory=list)
     """Сценарии, которые получили новую версию с этой версией шаблона."""
     lost: dict[str, list[str]] = field(default_factory=dict)
-    """Сценарий → что на новой версии шаблона не сходится (ошибки проверки)."""
+    """Сценарий → что на новой версии шаблона не сходится (ошибки проверки, которых не было на
+    прежней). Такой сценарий остаётся на прежней версии шаблона, пока его не исправят."""
 
     @property
     def manifest(self) -> ThemeManifest:
@@ -155,7 +158,7 @@ class LibraryMixin(HomeBase):
         imported: ThemeImport | None = None
         pinned: tuple[str, int] | None = None
         if ref is not None:
-            imported, pinned = self._scenario_theme(ref, base)
+            imported, pinned = self._scenario_theme(ref, base, sid)
             if spec.theme != pinned[0]:
                 spec = spec.model_copy(update={"theme": pinned[0]})
                 if text is not None:
@@ -163,15 +166,15 @@ class LibraryMixin(HomeBase):
         rec = self.store.save_scenario(sid, spec, text, theme=pinned, comment=comment)
         return SavedScenario(rec, self.validate_scenario(sid), imported if imported and not imported.skipped else None)
 
-    def _scenario_theme(self, ref: str, base: Path) -> tuple[ThemeImport | None, tuple[str, int]]:
+    def _scenario_theme(self, ref: str, base: Path, scenario_id: str) -> tuple[ThemeImport | None, tuple[str, int]]:
         if self.store.has_theme(ref):
             t = self.store.get_theme(ref)
             return None, (t.id, t.version)
         p = Path(ref)
         p = p if p.is_absolute() else base / p
         if p.is_file():
-            imp = self.import_theme(p)
-            return imp, (imp.record.id, imp.record.version)
+            imp = self._import_for_scenario(p, scenario_id)
+            return imp, (imp.record.id, imp.matched or imp.record.version)
         raise AgenError(
             ErrorCode.FILE_NOT_FOUND,
             f"Шаблон оформления «{ref}» не найден: в папке данных такого шаблона нет, файла {p} тоже",
@@ -183,7 +186,6 @@ class LibraryMixin(HomeBase):
         """Проверить сохранённый сценарий без данных: источники из папки данных, плагины,
         ссылки, слайды и метки на его версии шаблона."""
         v = self.scenario_version(scenario_id, version)
-        srcs = self._scenario_sources(v.spec)
         if v.theme_id is None or v.theme_version is None:
             return [
                 Issue(
@@ -192,10 +194,14 @@ class LibraryMixin(HomeBase):
                     message="У сценария нет шаблона оформления: укажите theme (id шаблона или путь к .pptx)",
                 )
             ]
-        tv = self.store.get_theme_version(v.theme_id, v.theme_version)
+        return self._check(v.spec, self.store.get_theme_version(v.theme_id, v.theme_version), scenario_id)
+
+    def _check(self, spec: ScenarioSpec, tv: ThemeVersionRecord, scenario_id: str) -> list[Issue]:
+        """Проверка сценария на заданной версии шаблона."""
+        srcs = self._scenario_sources(spec)
         try:
             return worker.validate(
-                RunRequest(scenario=v.spec, sources=srcs, inputs={}, theme=tv.pptx_uri, theme_roles=tv.roles)
+                RunRequest(scenario=spec, sources=srcs, inputs={}, theme=tv.pptx_uri, theme_roles=tv.roles)
             )
         except AgenError as e:
             return [Issue(level=IssueLevel.ERROR, node=f"scenario:{scenario_id}", message=str(e), code=str(e.code))]
@@ -253,20 +259,78 @@ class LibraryMixin(HomeBase):
         self, path: str | Path, theme_id: str | None = None, *, name: str | None = None, comment: str = ""
     ) -> ThemeImport:
         """Загрузить шаблон .pptx или .potx в папку данных: проверка, роли макетов, слайды-образцы
-        (F-410). Тот же файл, что и текущая версия, второй раз не загружается. Новая версия
-        переносит подтверждённые роли макетов (если макет остался), сценарии на этом шаблоне
+        (F-410). Без ``theme_id`` файл, который уже загружен (в любой шаблон, любой версией),
+        второй раз не загружается, а id нового шаблона берётся по имени файла; если шаблон с таким
+        id уже есть, нужно явно указать ``theme_id``: его новая версия или другой шаблон.
+        С ``theme_id`` существующего шаблона — его новая версия (если файл не тот же, что у текущей):
+        подтверждённые роли макетов переносятся (если макет остался), сценарии на этом шаблоне
         получают новую версию с ним."""
         self._need_write()
+        p = self._theme_file(path)
+        sha = file_sha256(p)
+        if theme_id is None:
+            same = self._same_file(sha)
+            if same is not None:
+                return same
+            tid = make_id(p.stem, "theme")
+            if self.store.has_theme(tid):
+                raise AgenError(
+                    ErrorCode.ALREADY_EXISTS,
+                    f"Шаблон «{tid}» уже есть, а файл {p.name} другой",
+                    hint=f"Новая версия этого шаблона: agen theme import {p.name} --id {tid}; "
+                    "отдельный шаблон: --id другой_id.",
+                )
+        else:
+            tid = check_id(theme_id, "шаблона")
+        return self._add_theme_version(p, tid, sha, name=name, comment=comment)
+
+    def _theme_file(self, path: str | Path) -> Path:
         p = Path(path)
         if not p.is_file():
             raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Файл не найден: {p}")
         if p.suffix.lower() not in THEME_SUFFIXES:
             raise AgenError(ErrorCode.SPEC_INVALID, f"Шаблон оформления — файл .pptx или .potx, а не {p.name}")
-        tid = check_id(theme_id, "шаблона") if theme_id else make_id(p.stem, "theme")
+        return p
+
+    def _same_file(self, sha: str) -> ThemeImport | None:
+        """Шаблон, в котором этот файл уже загружен: сначала тот, где это текущая версия."""
+        found = self.store.find_theme_versions(sha)
+        if not found:
+            return None
+        themes = {v.theme_id: self.store.get_theme(v.theme_id) for v in found}
+        current = [v for v in found if themes[v.theme_id].version == v.number]
+        v = (current or found)[-1]
+        return ThemeImport(themes[v.theme_id], skipped=True, matched=v.number)
+
+    def _import_for_scenario(self, path: Path, scenario_id: str) -> ThemeImport:
+        """Шаблон-файл из поля theme сценария. Уже загруженный файл берётся как есть. Если сценарий
+        уже стоит на шаблоне из файла с тем же именем, файл поменяли — это новая версия его
+        шаблона. Иначе это новый шаблон с id по имени файла; чужой шаблон с таким id не трогается,
+        id становится «id-2»."""
+        p = self._theme_file(path)
         sha = file_sha256(p)
+        same = self._same_file(sha)
+        if same is not None:
+            return same
+        own = self.store.get_scenario(scenario_id).current.theme_id if self.store.has_scenario(scenario_id) else None
+        if own is not None and self.store.has_theme(own) and self.store.get_theme(own).current.original_name == p.name:
+            tid = own
+        else:
+            tid = make_id(p.stem, "theme")
+            if self.store.has_theme(tid):
+                tid = self._free_theme_id(tid)
+        return self._add_theme_version(p, tid, sha, name=None, comment="")
+
+    def _free_theme_id(self, base: str) -> str:
+        n = 2
+        while self.store.has_theme(f"{base[:60]}-{n}"):
+            n += 1
+        return f"{base[:60]}-{n}"
+
+    def _add_theme_version(self, p: Path, tid: str, sha: str, *, name: str | None, comment: str) -> ThemeImport:
         prev = self.store.get_theme(tid) if self.store.has_theme(tid) else None
         if prev is not None and prev.current.sha256 == sha:
-            return ThemeImport(prev, skipped=True)
+            return ThemeImport(prev, skipped=True, matched=prev.version)
         number = self.store.next_theme_version(tid)
         dst = self.folder.theme_file(tid, number, p.suffix.lower())
         manifest, roles = self._import(p, prev.current.roles if prev else {}, strict=False)
@@ -298,7 +362,7 @@ class LibraryMixin(HomeBase):
         merged = {k: v for k, v in {**t.current.roles, **roles}.items() if v}
         manifest, kept = self._import(Path(t.current.pptx_uri), merged, strict=True)
         if kept == t.current.roles:
-            return ThemeImport(t, skipped=True)
+            return ThemeImport(t, skipped=True)  # роли не изменились
         number = self.store.next_theme_version(theme_id)
         record = t.current.model_copy(
             update={
@@ -321,15 +385,25 @@ class LibraryMixin(HomeBase):
         return manifest, kept
 
     def _bump(self, rec: ThemeRecord, comment: str) -> ThemeImport:
+        """Перевести сценарии на новую версию шаблона. Сценарий, у которого на новой версии
+        появились ошибки (пропал слайд-образец, метка, макет), остаётся на прежней версии:
+        отчёты по нему собираются как раньше, а список ошибок говорит, что поправить."""
         out = ThemeImport(rec)
+        new = rec.current
         for sc in self.store.scenarios_using_theme(rec.id):
             if sc.current.theme_version == rec.version:
                 continue
+            before = set()
+            if sc.current.theme_version is not None:
+                old = self.store.get_theme_version(rec.id, sc.current.theme_version)
+                before = {str(i) for i in self._check(sc.spec, old, sc.id) if i.level == IssueLevel.ERROR}
+            lost = [str(i) for i in self._check(sc.spec, new, sc.id) if i.level == IssueLevel.ERROR]
+            lost = [e for e in lost if e not in before]
+            if lost:
+                out.lost[sc.id] = lost
+                continue
             self.store.save_scenario(sc.id, sc.spec, sc.current.text, theme=(rec.id, rec.version), comment=comment)
             out.scenarios.append(sc.id)
-            errors = [str(i) for i in self.validate_scenario(sc.id) if i.level == IssueLevel.ERROR]
-            if errors:
-                out.lost[sc.id] = errors
         return out
 
     def theme_path(self, theme_id: str, version: int | None = None) -> Path:
@@ -340,7 +414,7 @@ class LibraryMixin(HomeBase):
         """Копия файла шаблона (например, чтобы доработать его в PowerPoint и загрузить снова)."""
         v = self.theme_version(theme_id, version)
         dst = Path(out)
-        if dst.is_dir():
+        if dst.is_dir() or dst.suffix.lower() not in THEME_SUFFIXES:
             dst = dst / f"{theme_id}_v{v.number}{Path(v.pptx_uri).suffix}"
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(v.pptx_uri, dst)

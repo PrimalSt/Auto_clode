@@ -47,6 +47,7 @@ def upgrade() -> None:
         sa.Column("owner_id", sa.String(64)),
         sa.Column("name", sa.Text, nullable=False),
         sa.Column("current_version", sa.Integer, nullable=False),
+        sa.Column("last_run_seq", sa.Integer, nullable=False, server_default="0"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_table(

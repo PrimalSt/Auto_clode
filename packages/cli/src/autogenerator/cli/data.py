@@ -346,15 +346,21 @@ def _choose_mapping(spec: SourceSpec, files: dict[str, ReconcileResult], view: P
             col = spec.column(cid)
             cands = rec.candidates.get(cid, [])
             users = rec.dependents.get(cid)
+            # без нужного столбца загрузка не пройдёт: «пусто» для него — это отмена
+            needed = bool(users) or cid in rec.missing_required or cid == spec.period_column
             typer.echo(f"  «{col.name}» (id {cid}){' — нужен: ' + '; '.join(users) if users else ''}")
             for i, c in enumerate(cands, start=1):
                 mark = "  ← похоже" if chosen.get(cid) == c.file_name else ""
                 typer.echo(f"    {i} — «{c.file_name}» (сходство {round(c.score * 100)}%){mark}")
-            typer.echo("    0 — оставить столбец пустым в этой загрузке")
-            default = next((i for i, c in enumerate(cands, start=1) if chosen.get(cid) == c.file_name), 0)
+            typer.echo("    0 — отменить загрузку" if needed else "    0 — оставить столбец пустым в этой загрузке")
+            default = next((i for i, c in enumerate(cands, start=1) if chosen.get(cid) == c.file_name), None)
+            if default is None and not needed:
+                default = 0
             n = typer.prompt("  Выбор", type=int, default=default)
             if 1 <= n <= len(cands):
                 choice.pairs[cands[n - 1].file_name] = cid
+            elif needed:
+                return None
             else:
                 choice.declined.append(cid)
     return choice if choice.pairs or choice.declined else None

@@ -52,6 +52,9 @@ def test_scenario_run_runs_and_backup(tmp_path: Path):
     assert "synthetic" in out and "сценарии: sales" in out
     out = agen("theme", "roles", "synthetic", "title_only=2147483661")
     assert "версия 2" in out and "title_only             → «Только заголовок» (id 2147483661), подтверждена" in out
+    assert "роли макетов не изменились" in agen("theme", "roles", "synthetic", "title_only=2147483661")
+    out = agen("theme", "import", ROOT / "examples" / "templates" / "synthetic.pptx")
+    assert "этот файл уже загружен (версия 2)" in out
     assert "шаблон synthetic v2" in agen("scenario", "list")
     assert "Роли макетов" in agen("theme", "check", "synthetic", code=1)  # в синтетическом шаблоне есть ошибки
     out = agen("theme", "export", "synthetic", "-o", tmp_path)
@@ -92,3 +95,59 @@ def test_upload_mapping_options(tmp_path: Path):
     assert "нет столбцов: nope" in agen("upload", "add", "sales", may, "--map", "Округ=nope", code=1)
     out = agen("upload", "add", "sales", may, "--map", "Округ=region")
     assert "Запомнено сопоставление: «Округ» → region" in out
+
+
+def test_console_mapping_prompt(monkeypatch):
+    import sys
+
+    import typer
+
+    from autogenerator.cli import data
+    from autogenerator.contracts import MappingCandidate, ReconcileResult, SourceSpec
+
+    spec = SourceSpec.model_validate(
+        {
+            "id": "s",
+            "name": "S",
+            "period_column": "date",
+            "columns": [
+                {"id": "date", "name": "Дата", "dtype": "date"},
+                {"id": "amount", "name": "Сумма", "dtype": "float"},
+                {"id": "note", "name": "Комментарий"},
+            ],
+        }
+    )
+    cands = [
+        MappingCandidate(file_name="Сумма, руб.", score=0.7, name_score=0.7),
+        MappingCandidate(file_name="Сумма, евро", score=0.68, name_score=0.68),
+    ]
+    files = {
+        "f.csv": ReconcileResult(
+            status="needs_review",
+            review=["amount", "note"],
+            candidates={"amount": cands, "note": [MappingCandidate(file_name="Примечание", score=0.5, name_score=0.5)]},
+            dependents={"amount": ["сценарий «Отчёт», вход s: наборы by_region"]},
+        )
+    }
+
+    class View:
+        def pause(self) -> None:
+            pass
+
+    answers: list[tuple[int | None, int]] = []
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def prompt(text, type=None, default=None):
+        answers.append((default, picks.pop(0)))
+        return answers[-1][1]
+
+    monkeypatch.setattr(typer, "prompt", prompt)
+    # Нужный столбец без явного кандидата: подсказки по умолчанию нет, 0 — отмена загрузки.
+    picks = [0]
+    assert data._choose_mapping(spec, files, View()) is None
+    assert answers == [(None, 0)]
+    # Выбран второй кандидат; ненужный столбец по Enter (0) остаётся пустым.
+    picks, answers = [2, 0], []
+    choice = data._choose_mapping(spec, files, View())
+    assert choice is not None and choice.pairs == {"Сумма, евро": "amount"} and choice.declined == ["note"]
+    assert answers == [(None, 2), (0, 0)]

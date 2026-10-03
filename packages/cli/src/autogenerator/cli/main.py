@@ -82,9 +82,14 @@ def run(
     theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx; по умолчанию theme из сценария")] = None,
     period: Annotated[
         str | None,
-        typer.Option(help="Отчётный период: 2026-03, 2026-Q1, 2026; по умолчанию — последний"),
+        typer.Option(
+            help="Отчётный период: 2026-03, 2026-Q1, 2026 или диапазон 2026-03-03..2026-03-19; по умолчанию — последний"
+        ),
     ] = None,
-    output: Annotated[Path | None, typer.Option("--output", "-o", help="Файл .pptx")] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Файл .pptx; у сохранённого сценария — файл или папка для копии отчёта"),
+    ] = None,
     output_dir: Annotated[Path | None, typer.Option(help="Папка для отчёта, если -o не задан")] = None,
     workdir: Annotated[
         Path | None,

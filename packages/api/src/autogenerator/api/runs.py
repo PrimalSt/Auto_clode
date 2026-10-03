@@ -13,6 +13,7 @@ import re
 import shutil
 import sqlite3
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -240,8 +241,10 @@ class RunsMixin(HomeBase):
             if not cand.is_file():
                 raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Резервной копии {src} нет", hint="Список: agen backup list")
             src = cand
+        # копия не меняется: immutable не оставляет рядом с ней файлов -wal и -shm
+        uri = src.resolve().as_uri() + "?mode=ro&immutable=1"
         try:
-            with sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
                 conn.execute("SELECT version_num FROM alembic_version").fetchone()
         except sqlite3.Error as e:
             raise AgenError(ErrorCode.DATA_FOLDER, f"{src.name} — не резервная копия базы Autogenerator: {e}") from e
@@ -250,7 +253,7 @@ class RunsMixin(HomeBase):
         db = self.folder.db_path
         for extra in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
             extra.unlink(missing_ok=True)
-        s, d = sqlite3.connect(src), sqlite3.connect(db)
+        s, d = sqlite3.connect(uri, uri=True), sqlite3.connect(db)
         try:
             s.backup(d)
         finally:

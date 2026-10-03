@@ -353,8 +353,6 @@ class Home(LibraryMixin, RunsMixin, HomeBase):
                 pairs.update(new_pairs)
                 left_empty |= new_declined
         try:
-            src, mapping_issues, remembered = self._remember_mapping(src, pairs, res)
-            res.issues += mapping_issues
             chosen: OverlapPolicy | None = overlap_policy
             if res.needs_overlap_choice:
                 chosen = choose_policy(res) if choose_policy is not None else None
@@ -380,6 +378,9 @@ class Home(LibraryMixin, RunsMixin, HomeBase):
                             "проверьте, нет ли двойного учёта",
                         )
                     )
+            # подтверждённые названия запоминаются, только когда загрузка точно будет записана
+            src, mapping_issues, remembered = self._remember_mapping(src, pairs, res)
+            res.issues += mapping_issues
             up = res.upload
             status = up.status
             if status == UploadStatus.NEEDS_REVIEW and accept_cast_errors:

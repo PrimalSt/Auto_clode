@@ -114,6 +114,8 @@ scenarios = Table(
     Column("owner_id", String(64)),
     Column("name", Text, nullable=False),
     Column("current_version", Integer, nullable=False),
+    # номер последнего запуска: id запусков не повторяются, даже если последний запуск удалён
+    Column("last_run_seq", Integer, nullable=False, server_default="0"),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 

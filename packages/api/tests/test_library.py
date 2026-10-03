@@ -1,5 +1,6 @@
 """Сопоставление столбцов при загрузке, сценарии, шаблоны, запуски и резервные копии в папке данных."""
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 from pptx import Presentation
 
 from autogenerator.api import Home, MappingChoice
-from autogenerator.contracts import AgenError, ErrorCode, RunRecord, RunStatus, SourceSpec
+from autogenerator.contracts import AgenError, ErrorCode, OverlapPolicy, RunRecord, RunStatus, SourceSpec
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "examples" / "sales"
@@ -89,6 +90,19 @@ def test_explicit_mapping_declined_and_wrong_ids(home: Home, tmp_path: Path):
     assert any("по вашему выбору" in m for m in msgs)
     assert home.source("s").spec.column("amount").aliases == ["Сумма заказа"]
     assert home.source("s").spec.column("region").aliases == []
+
+
+def test_mapping_is_remembered_only_with_the_upload(home: Home, tmp_path: Path):
+    home.create_source(SRC.model_copy(update={"overlap_policy": OverlapPolicy.ASK}))
+    home.upload("s", csv(tmp_path / "a.csv", "Дата;Регион;Сумма", ["01.01.2026;Москва;10"]))
+    b = csv(tmp_path / "b.csv", "Дата;Регион;Сумма заказа", ["02.01.2026;Казань;20"])
+    # Период пересекается, а правило не выбрано: загрузки нет — и сопоставление не запомнено.
+    with pytest.raises(AgenError) as e:
+        home.upload("s", b, mapping={"Сумма заказа": "amount"})
+    assert e.value.code == ErrorCode.OVERLAP_CHOICE
+    assert home.source("s").version == 1 and home.source("s").spec.column("amount").aliases == []
+    out = home.upload("s", b, mapping={"Сумма заказа": "amount"}, overlap_policy=OverlapPolicy.APPEND)
+    assert out.remembered == {"Сумма заказа": "amount"} and out.record.source_version == 2
 
 
 def test_choose_mapping_callback(home: Home, tmp_path: Path):
@@ -185,6 +199,54 @@ def test_theme_roles_and_reimport_carry_over(home: Home, tmp_path: Path):
     assert out.name == f"synthetic_v{imp.record.version}.pptx" and out.is_file()
 
 
+def test_theme_files_are_not_duplicated_or_taken_over(home: Home, tmp_path: Path):
+    example_home(home)
+    sid = home.save_scenario(EXAMPLE / "scenario.yaml", "sales_report").record.id
+    # Тот же файл под другим именем — уже загруженный шаблон, новой версии нет.
+    same = tmp_path / "corp.pptx"
+    shutil.copyfile(TEMPLATE, same)
+    imp = home.import_theme(same)
+    assert imp.skipped and imp.record.id == "synthetic" and imp.matched == 1
+    # Другой файл с тем же именем без id не становится новой версией чужого шаблона.
+    other = tmp_path / "other"
+    other.mkdir()
+    prs = Presentation(str(TEMPLATE))
+    prs.core_properties.title = "другой"
+    prs.save(str(other / "synthetic.pptx"))
+    with pytest.raises(AgenError) as e:
+        home.import_theme(other / "synthetic.pptx")
+    assert e.value.code == ErrorCode.ALREADY_EXISTS and "--id synthetic" in str(e.value)
+    # Сценарий с таким файлом получает отдельный шаблон; первый шаблон и его сценарий не тронуты.
+    text = home.scenario_text(sid).replace("theme: synthetic", "theme: synthetic.pptx")
+    (other / "scenario.yaml").write_text(text, encoding="utf-8")
+    second = home.save_scenario(other / "scenario.yaml", "second").record
+    assert second.current.theme_id == "synthetic-2" and home.theme("synthetic").version == 1
+    assert home.scenario(sid).current.theme_version == 1
+    # Тот же сценарий с изменённым файлом — новая версия его шаблона.
+    prs.core_properties.title = "ещё раз другой"
+    prs.save(str(other / "synthetic.pptx"))
+    again = home.save_scenario(other / "scenario.yaml", "second")
+    assert again.theme is not None and (again.theme.record.id, again.theme.record.version) == ("synthetic-2", 2)
+    assert again.record.current.theme_version == 2 and home.theme("synthetic").version == 1
+
+
+def test_scenario_stays_on_old_theme_version_if_new_one_breaks_it(home: Home, tmp_path: Path):
+    example_home(home)
+    sid = home.save_scenario(EXAMPLE / "scenario.yaml", "sales_report").record.id
+    prs = Presentation(str(TEMPLATE))
+    slides = prs.slides._sldIdLst
+    for s in list(slides):
+        slides.remove(s)  # слайдов-образцов, на которые ссылается сценарий, больше нет
+    prs.save(str(tmp_path / "broken.pptx"))
+    imp = home.import_theme(tmp_path / "broken.pptx", "synthetic")
+    assert imp.record.version == 2 and not imp.scenarios and imp.lost[sid]
+    assert home.scenario(sid).current.theme_version == 1 and home.scenario(sid).version == 1
+    assert not [i for i in home.validate_scenario(sid) if i.level == "error"]
+    # Копия шаблона в папку, которой ещё нет: папка создаётся, имя файла — по шаблону.
+    out = home.export_theme("synthetic", tmp_path / "новая папка", version=1)
+    assert out == tmp_path / "новая папка" / "synthetic_v1.pptx" and out.is_file()
+
+
 # --- запуски и резервные копии -----------------------------------------------------------
 
 
@@ -216,6 +278,10 @@ def test_run_journal_rerun_and_backups(home: Home, tmp_path: Path):
     safety = home.restore_backup(b)
     assert safety.is_file() and len(home.runs(sid)) == 3
     assert home.backups()[0].path == safety
+    assert not b.with_name(b.name + "-wal").exists() and not b.with_name(b.name + "-shm").exists()
+    # Номер удалённого последнего запуска не достаётся следующему.
+    home.delete_run("sales_report-003")
+    assert home.run_scenario(sid).id == "sales_report-004"
 
 
 def test_failed_run_is_recorded(home: Home, tmp_path: Path):

@@ -28,15 +28,22 @@ def print_issues(issues: list[Issue], verbose: bool = False) -> None:
 def print_theme_import(imp: ThemeImport, what: str = "Шаблон") -> None:
     t = imp.record
     if imp.skipped:
-        typer.echo(f"{what} «{t.id}»: тот же файл, что и версия {t.version} — новой версии нет")
+        if imp.matched is not None:
+            typer.echo(f"{what} «{t.id}»: этот файл уже загружен (версия {imp.matched}) — новой версии нет")
+        else:
+            typer.echo(f"{what} «{t.id}»: роли макетов не изменились — новой версии нет")
         return
     typer.echo(f"{what} «{t.id}» ({t.name}): версия {t.version}")
     for note in imp.manifest.notes:
         typer.echo(f"  ! {note}")
     for sid in imp.scenarios:
         typer.echo(f"  Сценарий «{sid}» получил новую версию с этой версией шаблона")
-        for err in imp.lost.get(sid, []):
+    for sid, errors in imp.lost.items():
+        typer.echo(f"  Сценарий «{sid}» остался на прежней версии шаблона: на новой не сходится")
+        for err in errors:
             typer.echo(f"    ✗ {err}")
+    if imp.lost:
+        typer.echo("  Исправьте сценарий и сохраните его снова (agen scenario add): он перейдёт на эту версию шаблона.")
 
 
 def _print_saved(saved: SavedScenario) -> None:

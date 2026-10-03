@@ -615,14 +615,19 @@ class SqliteMetadataStore:
     # --- запуски -----------------------------------------------------------------
 
     def next_run_seq(self, scenario_id: str) -> int:
+        """Номер следующего запуска; номера удалённых запусков не повторяются."""
         with self.engine.connect() as conn:
             top = conn.execute(select(func.max(runs.c.seq)).where(runs.c.scenario_id == scenario_id)).scalar()
-        return int(top or 0) + 1
+            last = conn.execute(select(scenarios.c.last_run_seq).where(scenarios.c.id == scenario_id)).scalar()
+        return max(int(top or 0), int(last or 0)) + 1
 
     def add_run(self, record: RunRecord) -> None:
         seq = int(record.id.rsplit("-", 1)[1])
         with self.engine.begin() as conn:
             conn.execute(insert(runs).values(seq=seq, **_run_row(record)))
+            last = conn.execute(select(scenarios.c.last_run_seq).where(scenarios.c.id == record.scenario_id)).scalar()
+            if last is not None and seq > last:
+                conn.execute(update(scenarios).where(scenarios.c.id == record.scenario_id).values(last_run_seq=seq))
 
     def update_run(self, run_id: str, **fields: Any) -> RunRecord:
         rec = self.get_run(run_id).model_copy(update=fields)
