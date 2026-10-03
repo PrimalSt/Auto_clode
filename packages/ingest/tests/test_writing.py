@@ -239,6 +239,24 @@ def test_parts_of_one_export_become_one_upload(tmp_path: Path, registry, jsonl):
     assert rejects["_file"].to_list() == ["b.jsonl"] and rejects["_row"].to_list() == [4]
 
 
+def test_reader_notes_go_to_result(tmp_path: Path, registry, jsonl):
+    """Замечания читателя (например, отброшенные лишние поля) не теряются: они в итоге
+    записи, по файлу выгрузки."""
+    a = jsonl(tmp_path / "a.jsonl", ["Дата", "Сумма"], [["01.03.2026", "1", "лишнее"], ["02.03.2026", "2"]])
+    b = jsonl(tmp_path / "b.jsonl", ["Дата", "Сумма"], [["03.03.2026", "3"]])
+    res = write_upload(
+        a,
+        registry,
+        source=SOURCE,
+        mapping={"Дата": "date", "Сумма": "amount"},
+        upload_id="u",
+        upload_seq=1,
+        out_dir=tmp_path / "up",
+        more=[FilePart(b, {"Дата": "date", "Сумма": "amount"})],
+    )
+    assert res.rows == 3 and res.notes == ["a.jsonl: строк длиннее шапки — 1"]
+
+
 def test_fixed_period_for_snapshot_exports(tmp_path: Path, registry, jsonl):
     source = SourceSpec(
         id="clients",

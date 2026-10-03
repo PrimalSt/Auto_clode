@@ -126,6 +126,9 @@ class UploadResult(BaseModel):
     period_min: date | None = None
     period_max: date | None = None
     cast_issues: list[CastIssue] = Field(default_factory=list)
+    notes: list[str] = Field(
+        default_factory=list, description="Замечания читателя: например, у скольких строк отброшены лишние поля"
+    )
     status: UploadStatus = UploadStatus.ACTIVE
     review_reasons: list[str] = Field(default_factory=list)
     options: ReadOptions | None = Field(None, description="Параметры, с которыми файл прочитан")

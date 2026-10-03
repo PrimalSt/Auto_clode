@@ -14,12 +14,17 @@ from rich.progress import BarColumn, Progress, TaskID, TaskProgressColumn, TextC
 from autogenerator.contracts import (
     ColumnProfile,
     IssueLevel,
+    RaggedRows,
     ReadOptions,
     ReadProgress,
     SchemaSnapshot,
 )
 
 LEVEL_MARK = {IssueLevel.INFO: "·", IssueLevel.WARNING: "!", IssueLevel.ERROR: "✗"}
+RAGGED_HELP = (
+    "Строки CSV, где полей больше, чем в шапке: error — ошибка (по умолчанию), truncate — отбросить лишние "
+    "поля и показать, у скольких строк"
+)
 
 home_option = typer.Option(
     "--home",
@@ -52,6 +57,7 @@ def read_options_from(
     no_quote: bool,
     header_row: int | None,
     sheet: list[str] | None,
+    ragged: RaggedRows | None,
 ) -> ReadOptions:
     """Параметры чтения из опций команды: заданы только те, что указаны."""
     data: dict[str, object] = {}
@@ -66,6 +72,8 @@ def read_options_from(
     if sheet:
         refs: list[str | int] = [int(s) if s.isdigit() else s for s in sheet]
         data["sheet"] = refs[0] if len(refs) == 1 else refs
+    if ragged:
+        data["ragged"] = ragged
     return ReadOptions.model_validate(data)
 
 
@@ -180,6 +188,7 @@ def utf8_output() -> None:
 
 __all__ = [
     "LEVEL_MARK",
+    "RAGGED_HELP",
     "ProgressView",
     "fail",
     "fmt_bytes",

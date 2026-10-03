@@ -28,6 +28,7 @@ import pyarrow as pa
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
+    NoteCallback,
     ProgressCallback,
     ReaderPlugin,
     ReadOptions,
@@ -146,7 +147,14 @@ class ExcelReader(ReaderPlugin):
                 if header and len(other) >= header_row and _norm_header(other[header_row - 1]) == header:
                     chosen.append(name)
         sheet: str | list[str | int] = chosen[0] if len(chosen) == 1 else list(chosen)
-        return ReadOptions(encoding=None, delimiter=None, quote=options.quote, header_row=header_row, sheet=sheet)
+        return ReadOptions(
+            encoding=None,
+            delimiter=None,
+            quote=options.quote,
+            header_row=header_row,
+            sheet=sheet,
+            ragged=options.ragged,
+        )
 
     # --- чтение -----------------------------------------------------------------------
 
@@ -173,6 +181,7 @@ class ExcelReader(ReaderPlugin):
         options: ReadOptions,
         batch_rows: int = 100_000,
         progress: ProgressCallback | None = None,
+        note: NoteCallback | None = None,
     ) -> Iterator[pa.RecordBatch]:
         opts = options if options.header_row and options.sheet is not None else self.sniff(path, options)
         assert opts.header_row

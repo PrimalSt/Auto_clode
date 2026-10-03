@@ -16,10 +16,10 @@ from typing import Annotated
 import typer
 
 from autogenerator import api
-from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RunResult
+from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RaggedRows, RunResult
 
 from .data import history, source_app, upload_app
-from .output import LEVEL_MARK, fail, home_option, print_snapshot, read_options_from, utf8_output
+from .output import LEVEL_MARK, RAGGED_HELP, fail, home_option, print_snapshot, read_options_from, utf8_output
 from .theme import theme_app
 
 app = typer.Typer(
@@ -376,12 +376,13 @@ def inspect(
     no_quote: Annotated[bool, typer.Option("--no-quote", help="В CSV нет кавычек")] = False,
     header_row: Annotated[int | None, typer.Option(help="Строка заголовков, с единицы; по умолчанию — найти")] = None,
     sheet: Annotated[list[str] | None, typer.Option(help="Лист Excel (имя или номер с нуля); можно несколько")] = None,
+    ragged: Annotated[RaggedRows | None, typer.Option(help=RAGGED_HELP)] = None,
     preview: Annotated[int, typer.Option(help="Показать первые N строк")] = 0,
     no_profile: Annotated[bool, typer.Option("--no-profile", help="Без профиля столбцов")] = False,
     json: Annotated[bool, typer.Option("--json", help="Снимок структуры в JSON")] = False,
 ) -> None:
     """Структура файла выгрузки: как он прочитан, типы и профиль столбцов по выборке."""
-    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
+    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet, ragged)
     try:
         snap = api.inspect(file, opts, format, profile=not no_profile)
     except AgenError as e:

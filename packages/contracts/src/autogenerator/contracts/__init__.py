@@ -23,6 +23,7 @@ from .plugins import (
     DataNeeds,
     ExpressionTools,
     NoParams,
+    NoteCallback,
     PandasTypes,
     ParamsPlugin,
     Plugin,
@@ -84,7 +85,7 @@ from .snapshot import (
     UploadStatus,
     ValueCount,
 )
-from .sources import ColumnSpec, DType, OverlapPolicy, PeriodFrom, ReadOptions, SourceSpec
+from .sources import ColumnSpec, DType, OverlapPolicy, PeriodFrom, RaggedRows, ReadOptions, SourceSpec
 from .storage import (
     DEFAULT_WORKSPACE,
     BlobStore,
@@ -169,6 +170,7 @@ __all__ = [
     "NodeKind",
     "NodeState",
     "NodeStatus",
+    "NoteCallback",
     "OverlapPolicy",
     "PandasTypes",
     "ParamsPlugin",
@@ -187,6 +189,7 @@ __all__ = [
     "PreviewResult",
     "PreviewSpec",
     "ProgressCallback",
+    "RaggedRows",
     "ReadOptions",
     "ReadProgress",
     "ReaderPlugin",

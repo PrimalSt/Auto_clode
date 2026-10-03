@@ -31,7 +31,7 @@ from .theme import Geometry, TemplateSlideInfo
 if TYPE_CHECKING:
     import polars as pl
 
-PLUGIN_API_VERSION = "0.4"
+PLUGIN_API_VERSION = "0.5"
 
 ColumnTypes = dict[str, DType | None]
 """Столбцы таблицы и их типы; ``None`` — тип станет известен только после прогона
@@ -110,6 +110,9 @@ class ReadProgress:
 
 
 ProgressCallback = Callable[[ReadProgress], None]
+NoteCallback = Callable[[str], None]
+"""Замечание читателя о файле целиком, которое надо показать пользователю (например, у
+скольких строк отброшены лишние поля)."""
 
 
 @dataclass
@@ -148,11 +151,13 @@ class ReaderPlugin(Plugin):
         options: ReadOptions,
         batch_rows: int = 100_000,
         progress: ProgressCallback | None = None,
+        note: NoteCallback | None = None,
     ) -> Iterator[pa.RecordBatch]:
         """Порции строк; все столбцы текстовые (``string``, ``large_string`` или ``string_view``),
         названия — как в файле (повторы различаются суффиксом « (2)», « (3)»). ``options`` —
         результат ``sniff``. Ошибку кодировки или формата читатель сообщает ``AgenError`` с
-        номером строки файла."""
+        номером строки файла; то, что прочитано не как в файле, но не мешает загрузке
+        (например, отброшенные по ``ragged: truncate`` поля), — через ``note``."""
 
     def columns(self, path: Path, options: ReadOptions) -> list[str]:
         """Названия столбцов в том виде, в каком их отдаст ``batches``. По умолчанию — по

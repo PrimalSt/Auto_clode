@@ -26,6 +26,7 @@ from autogenerator.contracts import (
     Period,
     PeriodFrom,
     PeriodUnit,
+    RaggedRows,
     ReadOptions,
     SourceSpec,
     UploadRecord,
@@ -33,7 +34,7 @@ from autogenerator.contracts import (
 )
 from autogenerator.contracts.yaml_io import dump_yaml
 
-from .output import LEVEL_MARK, ProgressView, fail, fmt_bytes, fmt_int, home_option, read_options_from
+from .output import LEVEL_MARK, RAGGED_HELP, ProgressView, fail, fmt_bytes, fmt_int, home_option, read_options_from
 
 source_app = typer.Typer(help="Источники: откуда приходят выгрузки и как их читать.", no_args_is_help=True)
 upload_app = typer.Typer(help="Загрузки: файлы выгрузок в истории источника.", no_args_is_help=True)
@@ -95,7 +96,8 @@ def print_source(spec: SourceSpec, version: int | None = None) -> None:
     v = f", версия настроек {version}" if version else ""
     typer.echo(f"{spec.name} ({spec.id}){v}")
     o = spec.options
-    how = ", ".join(f"{k} {v!r}" for k, v in o.model_dump(exclude_none=True).items() if not (k == "quote" and v == '"'))
+    default = {"quote": '"', "ragged": "error"}
+    how = ", ".join(f"{k} {v!r}" for k, v in o.model_dump(exclude_none=True).items() if default.get(k) != v)
     typer.echo(f"  Формат: {spec.format or 'по файлу'}{'; ' + how if how else ''}")
     where = (
         f"задаётся при загрузке — по имени файла или --period (столбец {spec.period_column})"
@@ -156,12 +158,13 @@ def source_create(
     no_quote: Annotated[bool, typer.Option("--no-quote", help="В CSV нет кавычек")] = False,
     header_row: Annotated[int | None, typer.Option(help="Строка заголовков, с единицы")] = None,
     sheet: Annotated[list[str] | None, typer.Option(help="Лист Excel; можно несколько")] = None,
+    ragged: Annotated[RaggedRows | None, typer.Option(help=RAGGED_HELP)] = None,
     out: Annotated[Path | None, typer.Option("--yaml", help="Записать черновик в YAML и не сохранять")] = None,
     upload: Annotated[bool, typer.Option("--upload", help="Сразу загрузить этот файл")] = False,
     home: HomeOpt = None,
 ) -> None:
     """Составить источник по выгрузке: столбцы с id и типами, столбец и тип периода."""
-    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
+    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet, ragged)
     with _home(home, write=out is None) as h:
         try:
             spec, _snap = h.draft_source(
@@ -325,7 +328,30 @@ def _choose_policy(res: IngestResult, spec: SourceSpec, view: ProgressView) -> O
     return choices[n - 1] if 1 <= n <= len(choices) else None
 
 
-def _print_upload(out: UploadOutcome, verbose: bool, spec: SourceSpec, period_given: bool) -> None:
+def _file_columns(u: UploadRecord) -> set[str]:
+    return set(u.schema_snapshot.names()) if u.schema_snapshot else set(u.mapping)
+
+
+def _print_replaced(h: Home, r: UploadRecord, overlaps: list[str]) -> None:
+    """Какие прежние загрузки заменяет новая (правило replace_period). Вторая часть выгрузки,
+    загруженная отдельной командой, заменяет первую, а не дополняет её — это надо видеть."""
+    olds = [h.upload_record(u) for u in overlaps]
+    if all(u.period == r.period for u in olds):
+        what = "загрузку" if len(olds) == 1 else "загрузки"
+        names = ", ".join(f"#{u.seq} {u.original_name}" for u in olds)
+        typer.echo(
+            f"  Заменяет {what} {names} за тот же период {r.period.key}: прежние строки за этот период "
+            "в историю не входят"
+        )
+    else:
+        where = "загрузке" if len(olds) == 1 else "загрузках"
+        names = ", ".join(f"#{u.seq} {u.original_name} ({u.period.key})" for u in olds)
+        typer.echo(f"  Заменяет строки за {r.period.key} в {where} {names}")
+    if any(_file_columns(u) == _file_columns(r) for u in olds):
+        typer.echo("  Если это части одной выгрузки, загрузите их одной командой с --concat")
+
+
+def _print_upload(h: Home, out: UploadOutcome, verbose: bool, spec: SourceSpec, period_given: bool) -> None:
     r = out.record
     res = out.result
     took = f", {res.upload.seconds:.0f} с" if res.upload.seconds >= 1 else ""
@@ -340,9 +366,11 @@ def _print_upload(out: UploadOutcome, verbose: bool, spec: SourceSpec, period_gi
     elif r.period_from_data and r.period_from_data.unit == PeriodUnit.RANGE and r.period == r.period_from_data:
         typer.echo(f"  Период взят по датам в файле. Поправить: agen upload period {r.id} ГГГГ-ММ-ДД..ГГГГ-ММ-ДД")
     if res.overlaps:
-        rule = r.overlap_policy or None
-        how = f" — {POLICY[rule]}" if rule else ""
-        typer.echo(f"  Пересекается с загрузками: {', '.join(res.overlaps)}{how}")
+        rule = r.overlap_policy or spec.overlap_policy
+        if rule == OverlapPolicy.REPLACE_PERIOD:
+            _print_replaced(h, r, res.overlaps)
+        else:
+            typer.echo(f"  Пересекается с загрузками: {', '.join(res.overlaps)} — {POLICY[rule]}")
     if res.upload.empty_rows:
         typer.echo(f"  Пустых строк пропущено: {fmt_int(res.upload.empty_rows)}")
     for i in out.issues:
@@ -392,7 +420,7 @@ def _upload_files(
             typer.echo(f"{label}: ошибка — {e}", err=True)
             failed += 1
             continue
-        _print_upload(out, verbose, spec, period is not None)
+        _print_upload(h, out, verbose, spec, period is not None)
     if failed:
         raise typer.Exit(1)
 
@@ -425,11 +453,12 @@ def upload_add(
     no_quote: Annotated[bool, typer.Option("--no-quote")] = False,
     header_row: Annotated[int | None, typer.Option()] = None,
     sheet: Annotated[list[str] | None, typer.Option()] = None,
+    ragged: Annotated[RaggedRows | None, typer.Option(help=RAGGED_HELP)] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
     home: HomeOpt = None,
 ) -> None:
     """Загрузить выгрузки в историю источника."""
-    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet)
+    opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet, ragged)
     with _home(home, write=True) as h:
         try:
             h.source(source_id)
@@ -501,6 +530,9 @@ def upload_show(
         typer.echo(f"  Статус: {STATUS[u.status]}; версия настроек источника {u.source_version}")
         if u.options:
             typer.echo(f"  Прочитан с параметрами: {u.options.model_dump(exclude_none=True)}")
+        if u.schema_snapshot:
+            for n in u.schema_snapshot.notes:
+                typer.echo(f"  · {n}")
         for ci in u.cast_report:
             typer.echo(
                 f"  ! {ci.column} ({ci.dtype}): {ci.errors} не распознано, например {', '.join(ci.examples[:5])}"

@@ -50,6 +50,7 @@ uv run agen source show sales --versions
 uv run agen upload add sales янв.csv фев.csv                 # загрузка с прогрессом
 uv run agen upload add sales мар.csv --overlap append        # правило, если у источника «ask»
 uv run agen upload add orders ч1.xlsx ч2.xlsx --concat       # части одной выгрузки — одна загрузка
+uv run agen upload add orders выгрузка.csv --ragged truncate # строки длиннее шапки: отбросить лишние поля
 uv run agen upload add clients выгрузка.xlsx --period 2026-01 # период среза, если его нет в имени
 uv run agen upload list sales
 uv run agen upload show <id>                                 # ошибки приведения, профиль
@@ -59,6 +60,11 @@ uv run agen upload period <id> 2026-03-01..2026-03-31        # поправит�
 uv run agen history sales                                    # загрузки, покрытие, пропуски
 uv run agen history sales --export история.parquet           # действующая история в файл
 ```
+
+Если новая загрузка заменяет прежнюю за тот же период (правило `replace_period`), команда
+так и пишет: «Заменяет загрузку #1 … за тот же период». Когда у прежней загрузки те же
+столбцы, она подсказывает `--concat`: части одной выгрузки, загруженные отдельными
+командами, заменяют друг друга, а не складываются.
 
 Прочее:
 
