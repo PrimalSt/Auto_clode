@@ -86,6 +86,48 @@ def coverage(manifest: HistoryManifest) -> list[DateSpan]:
     return [DateSpan(start=s, end_exclusive=e) for s, e in merged]
 
 
+def uploads_in(manifest: HistoryManifest, span: DateSpan) -> list[UploadRef]:
+    """Активные загрузки, строки которых входят в действующую историю за отрезок ``span``.
+
+    Считается по объявленным периодам, как ``coverage``: период загрузки пересекается с
+    отрезком и не заменён там целиком более поздними загрузками (``replace_period`` — за
+    свой период, ``replace_all`` — всё раньше себя). Строки, которые убирает
+    ``merge_dedupe``, известны только по данным: такая загрузка считается прочитанной.
+    """
+    active = manifest.active_uploads
+    rules: dict[str, OverlapPolicy] = {}
+    if manifest.overlap_policy != OverlapPolicy.MERGE_DEDUPE:
+        for i, up in enumerate(active):
+            try:
+                rules[up.id] = _rule(manifest, up, active[:i])
+            except AgenError:
+                rules[up.id] = OverlapPolicy.APPEND  # правило не выбрано: об этом скажет чтение истории
+        last_full = max((i for i, up in enumerate(active) if rules[up.id] == OverlapPolicy.REPLACE_ALL), default=0)
+        active = active[last_full:]
+    out: list[UploadRef] = []
+    for i, up in enumerate(active):
+        start = up.period.start if span.start is None else max(up.period.start, span.start)
+        end = min(up.period.end_exclusive, span.end_exclusive)
+        rest = [(start, end)] if start < end else []
+        for later in active[i + 1 :]:
+            if rest and rules.get(later.id) == OverlapPolicy.REPLACE_PERIOD:
+                rest = _cut(rest, later.period)
+        if rest:
+            out.append(up)
+    return out
+
+
+def _cut(parts: list[tuple[date, date]], p: Period) -> list[tuple[date, date]]:
+    """Отрезки ``[начало, конец)`` без дат периода ``p``."""
+    out = []
+    for s, e in parts:
+        if s < p.start:
+            out.append((s, min(e, p.start)))
+        if e > p.end_exclusive:
+            out.append((max(s, p.end_exclusive), e))
+    return out
+
+
 # --- Действующая история ----------------------------------------------------------------
 
 

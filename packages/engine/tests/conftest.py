@@ -14,6 +14,7 @@ from autogenerator.contracts import (
     DType,
     Period,
     StepPlugin,
+    UploadRef,
     WindowPlugin,
 )
 from autogenerator.engine import InputSchema
@@ -118,6 +119,9 @@ class Formula(StepPlugin):
 
     def columns_used(self, params: Any, tools: Any) -> set[str]:
         return tools.columns_in(params.expr)
+
+    def columns_written(self, params: Any) -> set[str]:
+        return {params.column}
 
     def output_schema(self, params: Any, schema: Any, tools: Any) -> Any:
         return {**schema, params.column: tools.expr_type(params.expr, schema)}
@@ -251,12 +255,14 @@ class Boom(StepPlugin):
 
 
 class MemoryHistory:
-    """История входов в памяти; запоминает, какие границы ей передал движок."""
+    """История входов в памяти; запоминает, какие границы ей передал движок. Загрузки
+    (``uploads``) — только метаданные: строки берутся из ``frames``."""
 
     def __init__(self, frames: dict[str, pl.DataFrame], schemas: dict[str, InputSchema], coverage=None):
         self.frames = frames
         self.schemas = schemas
         self._coverage = coverage or {}
+        self._uploads: dict[str, list[UploadRef]] = {}
         self.calls: list[tuple[str, date | None, date | None]] = []
 
     def period_column(self, input_id: str) -> str:
@@ -277,6 +283,13 @@ class MemoryHistory:
 
     def coverage(self, input_id: str) -> list[DateSpan]:
         return self._coverage.get(input_id, [])
+
+    def uploads(self, input_id: str, span: DateSpan) -> list[UploadRef]:
+        return [
+            u
+            for u in self._uploads.get(input_id, [])
+            if (span.start is None or u.period.end_exclusive > span.start) and u.period.start < span.end_exclusive
+        ]
 
     def fingerprint(self, input_id: str) -> str | None:
         df = self.frames[input_id]

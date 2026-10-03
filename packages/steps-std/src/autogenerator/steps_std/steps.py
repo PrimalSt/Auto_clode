@@ -502,6 +502,9 @@ class RenameStep(StepPlugin):
     def columns_used(self, params: Any, tools: ExpressionTools) -> set[str]:
         return set(params.columns)
 
+    def columns_written(self, params: Any) -> set[str]:
+        return set(params.columns.values())
+
     def output_schema(self, params: Any, schema: ColumnTypes, tools: SchemaTools) -> ColumnTypes | None:
         out: ColumnTypes = {}
         for c, t in schema.items():
@@ -628,6 +631,9 @@ class FormulaStep(StepPlugin):
 
     def columns_used(self, params: Any, tools: ExpressionTools) -> set[str]:
         return tools.columns_in(params.expr)
+
+    def columns_written(self, params: Any) -> set[str]:
+        return {params.column}
 
     def output_schema(self, params: Any, schema: ColumnTypes, tools: SchemaTools) -> ColumnTypes | None:
         return {**schema, params.column: tools.expr_type(params.expr, schema)}

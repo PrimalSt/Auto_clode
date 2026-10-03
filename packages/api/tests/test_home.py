@@ -12,6 +12,7 @@ from autogenerator.contracts import (
     Period,
     PeriodFrom,
     PeriodUnit,
+    ScenarioSpec,
     SourceSpec,
     UploadStatus,
 )
@@ -159,6 +160,54 @@ def test_find_inputs_takes_every_export_format(tmp_path: Path):
     files = find_inputs(load_scenario(EXAMPLE / "scenario.yaml"), tmp_path)
     assert [Path(f).name for f in files["sales"]] == ["апр.csv", "май.xlsm", "мар.xls", "фев.XLSB", "янв.xlsx"]
     assert "plan" not in files
+
+
+def test_run_warns_about_column_missing_in_upload(home: Home, tmp_path: Path):
+    spec = SourceSpec.model_validate(
+        {
+            "id": "s",
+            "name": "S",
+            "period_column": "date",
+            "columns": [
+                {"id": "date", "name": "Дата", "dtype": "date"},
+                {"id": "region", "name": "Регион"},
+                {"id": "amount", "name": "Сумма", "dtype": "float"},
+            ],
+        }
+    )
+    home.create_source(spec)
+    home.upload("s", csv(tmp_path / "фев.csv", ["01.02.2026;Москва;1", "02.02.2026;Казань;2"]))
+    # В мартовской выгрузке «Регион» переименован: сверка его не нашла, в загрузке он пустой.
+    renamed = tmp_path / "мар.csv"
+    renamed.write_text("Дата;Область;Сумма\n01.03.2026;Москва;3\n", encoding="utf-8")
+    mar = home.upload("s", renamed).record
+    sc = ScenarioSpec.model_validate(
+        {
+            "name": "t",
+            "inputs": [{"id": "sales", "source": "s"}],
+            "datasets": [{"id": "by_region", "input": "sales", "group_by": ["region"], "aggregate": [{"fn": "count"}]}],
+        }
+    )
+    theme = EXAMPLE.parent / "templates" / "synthetic.pptx"
+
+    def warnings(period: str | None = None) -> list[str]:
+        res = run(sc, home=tmp_path / "home", theme=theme, period=period, output=tmp_path / "r.pptx")
+        return [str(i) for i in res.warnings if "в загрузке #" in i.message]
+
+    [w] = warnings()
+    assert w.startswith("[input:sales] в загрузке #2 «мар.csv» (2026-03) нет столбца «Регион» (region)")
+    assert "(dataset:by_region)" in w and "aliases источника «s»" in w
+    assert warnings("2026-02") == []
+    # Исключённая загрузка не читается.
+    home.set_upload_status(mar.id, UploadStatus.EXCLUDED)
+    assert warnings("2026-03") == []
+    # Новое название в aliases и повторная загрузка того же файла заменяют март.
+    home.set_upload_status(mar.id, UploadStatus.ACTIVE)
+    fixed = spec.model_copy(deep=True)
+    fixed.columns[1].aliases = ["Область"]
+    home.update_source(fixed)
+    home.upload("s", renamed, force=True)
+    assert warnings() == []
 
 
 def test_parts_of_one_export_and_duplicate_set(home: Home, tmp_path: Path):

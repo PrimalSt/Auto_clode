@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from autogenerator.contracts import AgenError, DateSpan, NodeState, Period, ScenarioSpec
-from autogenerator.engine import analyze, column_usage, execute
+from autogenerator.contracts import AgenError, DateSpan, DType, NodeState, Period, ScenarioSpec, UploadRef
+from autogenerator.engine import InputSchema, analyze, column_usage, execute, preview
 
 MARCH = Period.parse("2026-03")
 
@@ -123,6 +123,84 @@ def test_coverage_gap_warning(registry, history, tmp_path):
     sc = scenario(metrics=[{"id": "prev", "input": "sales", "window": "previous_period", "fn": "count"}])
     res = run(sc, registry, history, tmp_path)
     assert any("нет загрузок входа «sales» за" in i.message for i in res.issues)
+
+
+def renamed_region(history) -> None:
+    """В мартовской выгрузке «Регион» назван иначе: сверка его не нашла, и в загрузке #2 он пустой."""
+    history.schemas["sales"] = InputSchema(
+        "date",
+        {"date": DType.DATE, "region": DType.STRING, "amount": DType.FLOAT},
+        names={"date": "Дата", "region": "Регион", "amount": "Сумма"},
+    )
+    history._uploads["sales"] = [
+        UploadRef(
+            id="u1",
+            seq=1,
+            uri="",
+            period=Period.parse("2026-01-01..2026-02-28"),
+            original_name="янв-фев.csv",
+            file_columns=["amount", "date", "region"],
+        ),
+        UploadRef(
+            id="u2",
+            seq=2,
+            uri="",
+            period=Period.parse("2026-03"),
+            original_name="мар.csv",
+            file_columns=["amount", "date"],
+        ),
+    ]
+
+
+def column_warnings(res) -> list[str]:
+    return [i.message for i in res.issues if "в загрузке #" in i.message]
+
+
+BY_REGION = {"id": "d", "input": "sales", "group_by": ["region"], "aggregate": [{"fn": "count"}]}
+
+
+def test_column_missing_in_upload(registry, history, tmp_path):
+    renamed_region(history)
+    rev = {"id": "rev", "input": "sales", "fn": "sum", "column": "amount", "where": "region = 'A'"}
+    res = run(scenario(datasets=[BY_REGION], metrics=[rev]), registry, history, tmp_path)
+    warnings = [i for i in res.issues if "в загрузке #" in i.message]
+    assert [(w.level, w.node) for w in warnings] == [("warning", "input:sales")]
+    assert warnings[0].message == (
+        "в загрузке #2 «мар.csv» (2026-03) нет столбца «Регион» (region) — в ней он пустой, а сценарий его "
+        "использует (dataset:d, metric:rev). Если столбец переименован: добавьте новое название в aliases "
+        "источника «s» и загрузите файл заново"
+    )
+    # Все пропавшие столбцы загрузки — в одном предупреждении, в порядке столбцов источника.
+    history._uploads["sales"][1].file_columns = ["date"]
+    [w] = column_warnings(run(scenario(datasets=[BY_REGION], metrics=[rev]), registry, history, tmp_path))
+    assert "нет столбцов «Регион» (region), «Сумма» (amount) — в ней они пустые" in w
+    assert "(dataset:d, metric:rev). Если столбцы переименованы: добавьте новые названия" in w
+    history._uploads["sales"][1].file_columns = ["amount", "date"]
+    # Сценарий без этого столбца и окно, которое до этой загрузки не доходит, — без предупреждения.
+    total = {"id": "total", "input": "sales", "fn": "sum", "column": "amount"}
+    assert column_warnings(run(scenario(metrics=[total]), registry, history, tmp_path)) == []
+    prev = {**BY_REGION, "window": "previous_period"}
+    assert column_warnings(run(scenario(datasets=[prev]), registry, history, tmp_path)) == []
+    # Превью предупреждений о данных не пишет.
+    plan = analyze(scenario(datasets=[BY_REGION]), registry, history.schemas)
+    assert column_warnings(preview(plan, registry, history, MARCH, tmp_path / "p", "dataset:d")) == []
+
+
+def test_column_missing_in_upload_for_steps(registry, history, tmp_path):
+    renamed_region(history)
+    # Шаг без нижней границы видит всю прочитанную историю: ему нужен столбец и в мартовской загрузке.
+    dedupe = {"id": "dd", "type": "dedupe", "by": ["region"]}
+    count = {"id": "n", "input": "sales", "window": "previous_period", "fn": "count"}
+    sc = scenario(inputs=[{"id": "sales", "source": "s", "pipeline": [dedupe]}], metrics=[count])
+    [w] = column_warnings(run(sc, registry, history, tmp_path))
+    assert "«Регион» (region)" in w and "(input:sales/step:dd)" in w
+    assert column_warnings(run(sc, registry, history, tmp_path, period=Period.parse("2026-02"))) == []
+    # Формула с id столбца источника заменяет его: дальше это результат шага, столбец файла не нужен.
+    formula = {"id": "f", "type": "formula", "column": "region", "expr": "'все'"}
+    sc = scenario(inputs=[{"id": "sales", "source": "s", "pipeline": [formula]}], datasets=[BY_REGION])
+    assert "region" not in column_usage(sc, registry, history.schemas)["sales"]
+    res = run(sc, registry, history, tmp_path)
+    assert column_warnings(res) == [] and res.datasets["d"].to_pylist() == [{"region": "все", "count": 2}]
 
 
 @pytest.mark.parametrize(
