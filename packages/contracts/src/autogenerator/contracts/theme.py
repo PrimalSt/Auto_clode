@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +94,20 @@ class SlotInfo(BaseModel):
     geometry: Geometry
 
 
+class DesignElement(BaseModel):
+    """Элемент оформления роли: логотип, волна и т. п. — фигура со слайда этой роли в шаблоне,
+    которой нет на макете роли. Переносится на новые слайды этой роли (раздел 6.5). Если такая
+    же фигура есть на макете с ``preserve="1"``, она берётся оттуда: тогда элемент не пропадёт,
+    если слайд удалят из шаблона. Положение — как на слайде роли."""
+
+    name: str
+    kind: Literal["picture", "group", "shape"]
+    shape_id: int = Field(description="id фигуры в источнике")
+    from_slide: int | None = Field(None, description="sldId слайда шаблона, откуда фигура")
+    from_layout: str | None = Field(None, description="Ключ макета с preserve, где есть такая же фигура")
+    geometry: Geometry
+
+
 class RoleBinding(BaseModel):
     role: LayoutRole
     layout_key: str
@@ -105,6 +120,9 @@ class RoleBinding(BaseModel):
         "макета (например, «пустой» — из макета только с заголовком)",
     )
     derived: str | None = Field(None, description="Как роль построена, если подходящего макета в шаблоне нет")
+    decorations: list[DesignElement] = Field(
+        default_factory=list, description="Элементы оформления: переносятся на новые слайды этой роли"
+    )
 
     def slot(self, name: str) -> SlotInfo | None:
         for s in self.slots:

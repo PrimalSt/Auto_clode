@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pptx import Presentation
 
-from autogenerator.contracts import ErrorCode, Period, PreviewRequest, RunRequest, SourceSpec
+from autogenerator.contracts import ErrorCode, Period, PreviewRequest, RunRequest, SlideSpec, SourceSpec
 from autogenerator.contracts.yaml_io import load_model_list, load_yaml
 from autogenerator.worker import load_scenario, preview, run
 
@@ -148,3 +148,15 @@ def test_preview_nodes_and_cache(tmp_path: Path):
     assert {"revenue_prev_change_pct", "share"} <= {c.name for c in res.columns}
     res = preview(preview_request("metric:plan_done"))
     assert res.value == pytest.approx(1.032, abs=1e-3)
+
+
+def test_new_title_slide_gets_cover_logo(tmp_path: Path):
+    sc = load_scenario(load_yaml(EXAMPLE / "scenario.yaml"))
+    title = {"layout": "title", "blocks": [{"type": "text", "slot": "title", "text": "Продажи"}]}
+    sc = sc.model_copy(update={"slides": [SlideSpec.model_validate(title)]})
+    res = run(request(tmp_path, scenario=sc))
+    assert res.ok, res.issues
+    slide = Presentation(res.output_path).slides[0]
+    logo = next(sh for sh in slide.shapes if sh.name == "Логотип")
+    assert logo.shape_type == 6 and round(logo.top / 914400, 1) == 6.2  # группа, как на обложке
+    assert slide.shapes[0].name == "Логотип"  # под остальными фигурами

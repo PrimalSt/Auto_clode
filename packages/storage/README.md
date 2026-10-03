@@ -12,7 +12,8 @@
   `agen`, позже — сервер приложения). Вторая команда, пока первая пишет, получает
   сообщение «папка данных занята». Блокировку держит открытый файл `server.lock`, поэтому
   после сбоя она снимается сама.
-- `SqliteMetadataStore` — источники, версии их настроек и загрузки в
+- `SqliteMetadataStore` — источники, версии их настроек и загрузки, сценарии и их версии,
+  шаблоны оформления и их версии (с подтверждёнными ролями макетов), запуски в
   `db/autogenerator.sqlite` (SQLite в режиме WAL, SQLAlchemy 2). Схема создаётся и
   обновляется миграциями Alembic при открытии базы (`migrations/versions`); перед миграцией
   существующей базы делается копия в `backups`. Каждое изменение настроек источника —
@@ -26,6 +27,8 @@ Autogenerator/
   db/autogenerator.sqlite
   local/sources/<источник>/uploads/<загрузка>/month=2026-03/part-0.parquet
   local/sources/<источник>/uploads/<загрузка>/rejects.parquet
+  local/themes/<шаблон>/<версия>.pptx
+  local/outputs/<запуск>/Отчёт_….pptx
   cache/  tmp/  backups/  logs/  server.lock
 ```
 

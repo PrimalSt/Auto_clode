@@ -14,6 +14,7 @@ from pptx.util import Emu
 
 from autogenerator.contracts import AgenError, ErrorCode, TemplateSlideInfo, ThemeManifest
 
+from .decorations import find_decorations
 from .fonts import template_fonts
 from .layouts import guess_roles, read_layouts
 from .lint import lint
@@ -126,6 +127,12 @@ def import_template(
         slide_info(slide, number, sid, keys.get(slide.slide_layout.part.partname, ""))
         for number, (sid, slide) in enumerate(zip(ids, prs.slides, strict=True), start=1)
     ]
+    roles_ = find_decorations(
+        prs,
+        roles_,
+        {info.key: layout for info, layout in pairs},
+        [(s.slide_id, slide, s.layout_key) for s, slide in zip(slides, prs.slides, strict=True)],
+    )
     fonts = template_fonts(prs)
     report = lint(prs, slides, layouts, fonts, width, height) if check else []
     return ThemeManifest(

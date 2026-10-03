@@ -106,6 +106,7 @@ from .storage import (
 from .theme import (
     ChartGroupInfo,
     ChartInfo,
+    DesignElement,
     FontInfo,
     Geometry,
     LayoutInfo,
@@ -156,6 +157,7 @@ __all__ = [
     "DatasetSpec",
     "DateSpan",
     "DeriveSpec",
+    "DesignElement",
     "EngineResult",
     "EnvironmentInfo",
     "ErrorCode",

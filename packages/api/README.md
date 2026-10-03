@@ -35,6 +35,35 @@ with Home.open(write=True) as home:          # папка приложения �
 нескольких файлов загружает `home.upload("orders", ["часть1.xlsx", "часть2.xlsx"])` — одной
 загрузкой. У выгрузки-среза период берётся из имени файла или из `period=Period.parse("2026-01")`.
 
+Сопоставление переименованных столбцов (F-602…F-606): нужные столбцы — те, что используют
+сохранённые сценарии (`home.column_usage("sales")`). Если такой столбец пропал, а похожий в
+файле есть, `upload` останавливается с `SCHEMA_REVIEW`, в `e.details["files"]` — сверка с
+кандидатами. Решение передаётся так:
+
+```python
+home.upload("sales", "фев.csv", accept_mapping=True)                 # принять предложенное
+home.upload("sales", "фев.csv", mapping={"Сумма, руб.": "amount"}, declined=["manager"])
+home.upload("sales", "фев.csv", choose_mapping=lambda spec, files: MappingChoice(pairs={...}))
+```
+
+Подтверждённые названия запоминаются в `aliases` источника (`out.remembered`).
+
+**Сценарии, шаблоны, запуски** — тоже в папке данных:
+
+```python
+with Home.open(write=True) as home:
+    saved = home.save_scenario("сценарий.yaml", "sales")    # версия; шаблон-файл загружается сам
+    print(saved.record.version, saved.errors)
+    home.set_theme_roles("synthetic", {"title_only": "2147483661"})   # новая версия шаблона
+    run = home.run_scenario("sales", period="2026-02", output="Отчёты")
+    print(run.status, run.output_copy, run.result.environment)
+    home.rerun(run.id)                                      # тот же период по текущим данным
+    home.backup()                                           # резервная копия базы
+```
+
+Также: `scenarios`, `scenario_text` (YAML, как сохранили), `copy_scenario`, `import_theme`,
+`export_theme`, `runs`, `run_output`, `backups`, `restore_backup`.
+
 **Превью** узла — первые строки, число строк до и после каждого шага, набор или показатель:
 
 ```python

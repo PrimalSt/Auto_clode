@@ -88,3 +88,17 @@ def test_describe(manifest: ThemeManifest):
     assert "Слайды-образцы: меток" in text
     assert "категории закреплены надписями" in text
     assert "[ошибка] слайд 7" in text
+
+
+def test_cover_logo_is_a_design_element(manifest: ThemeManifest):
+    # Логотип обложки на макете «Title Slide» отсутствует, а такая же группа есть на макете
+    # «Последний» с preserve: она и берётся, а положение — как на обложке.
+    title = manifest.role(LayoutRole.TITLE)
+    assert title is not None and len(title.decorations) == 1
+    logo = title.decorations[0]
+    final = manifest.role(LayoutRole.FINAL)
+    assert final is not None and not final.decorations
+    assert (logo.name, logo.kind, logo.from_layout, logo.from_slide) == ("Логотип", "group", final.layout_key, None)
+    assert round(logo.geometry.y / 914400, 1) == 6.2
+    # У ролей со слайдами содержания элементов оформления нет.
+    assert not manifest.role(LayoutRole.TITLE_ONLY).decorations

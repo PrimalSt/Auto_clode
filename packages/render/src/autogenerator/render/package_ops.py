@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import random
 import re
 import uuid
@@ -26,7 +27,7 @@ from pptx.opc.package import Part, PartFactory, _Relationship
 from pptx.opc.packuri import PackURI
 from pptx.parts.slide import SlidePart
 
-from autogenerator.contracts.ooxml import NS, P, R, xp
+from autogenerator.contracts.ooxml import NS, A, P, R, xp
 
 P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 SECTIONS_URI = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"
@@ -117,6 +118,45 @@ def add_slide(prs: Any, layout: Any) -> Any:
     slide = part.slide
     slide.shapes.clone_layout_placeholders(layout)
     return slide
+
+
+def find_shape(tree: Any, shape_id: int) -> Any | None:
+    """Фигура верхнего уровня дерева фигур по id."""
+    for el in tree:
+        c = el.find(f".//{P}cNvPr")
+        if c is not None and c.get("id") == str(shape_id) and el.getparent() is tree:
+            return el
+    return None
+
+
+def copy_shape(src_part: Part, el: Any, slide: Any, x: int, y: int) -> Any:
+    """Копия фигуры (картинки, группы, фигуры без данных) со слайда или макета на ``slide``:
+    связи с картинками и ссылками ставятся заново, id фигур — свободные, левый верхний угол —
+    (x, y). Копия ложится под остальные фигуры: элемент оформления — фон для содержания."""
+    new = copy.deepcopy(el)
+    dst: Part = slide.part
+    for d in new.iter():
+        for attr in [a for a in d.attrib if a.startswith(R)]:
+            rel = src_part.rels.get(d.get(attr))
+            if rel is None:
+                del d.attrib[attr]
+            elif rel.is_external:
+                d.set(attr, dst.relate_to(rel.target_ref, rel.reltype, is_external=True))
+            else:
+                d.set(attr, dst.relate_to(rel.target_part, rel.reltype))
+    tree = slide.shapes._spTree
+    ids = [int(c.get("id", 0)) for c in slide._element.iter(f"{P}cNvPr")]
+    next_id = max(ids, default=1) + 1
+    for c in new.iter(f"{P}cNvPr"):
+        c.set("id", str(next_id))
+        next_id += 1
+    xfrm = new.find(f"{P}grpSpPr/{A}xfrm") if new.tag == f"{P}grpSp" else new.find(f"{P}spPr/{A}xfrm")
+    off = xfrm.find(f"{A}off") if xfrm is not None else None
+    if off is not None:
+        off.set("x", str(x))
+        off.set("y", str(y))
+    tree.insert(2, new)  # после nvGrpSpPr и grpSpPr
+    return new
 
 
 def duplicate_slide(prs: Any, slide: Any) -> Any:

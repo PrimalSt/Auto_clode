@@ -46,6 +46,7 @@ from autogenerator.contracts import (
     NodeStatus,
     Period,
     RenderResult,
+    RoleBinding,
     ScenarioSpec,
     SlideSpec,
     TemplateSlideInfo,
@@ -58,8 +59,10 @@ from autogenerator.plugin_host import PluginRegistry
 from .package_ops import (
     add_slide,
     check_package,
+    copy_shape,
     drop_unused_comment_authors,
     duplicate_slide,
+    find_shape,
     remove_slides,
     renumber_parts,
     reorder_slides,
@@ -309,6 +312,27 @@ def _error_marker(slide: Any, geometry: Any, message: str) -> None:
         r.font.size = Pt(14)
 
 
+def _add_decorations(
+    slide: Any,
+    binding: RoleBinding,
+    layouts: dict[str, Any],
+    template_slides: dict[int, Any],
+    issues: list[Issue],
+    node: str,
+) -> None:
+    """Элементы оформления роли (логотип, волна) — на новый слайд, туда же, где они на слайде
+    роли в шаблоне."""
+    for d in binding.decorations:
+        src = layouts.get(d.from_layout) if d.from_layout else template_slides.get(d.from_slide or 0)
+        el = find_shape(src.shapes._spTree, d.shape_id) if src is not None else None
+        if src is None or el is None:
+            issues.append(
+                Issue(level=IssueLevel.WARNING, node=node, message=f"Элемент оформления «{d.name}» не найден в шаблоне")
+            )
+            continue
+        copy_shape(src.part, el, slide, d.geometry.x, d.geometry.y)
+
+
 def _remove_empty_placeholders(slide: Any) -> None:
     """Плейсхолдеры-надписи без своего текста (только с подсказкой, видной в режиме правки).
     Плейсхолдеры с графиком, таблицей или картинкой остаются."""
@@ -552,6 +576,7 @@ def build_presentation(
                 raise AgenError(ErrorCode.LAYOUT_MISSING, f"В рабочей копии шаблона нет макета {binding.layout_key}")
             slide = add_slide(prs, layout)
             _drop_placeholders(slide, binding.drop_placeholders)
+            _add_decorations(slide, binding, layouts, template_slides, issues, f"slide:{n}")
             plan.append(_Planned(n, spec, slide, int(prs.slides._sldIdLst[-1].get("id")), None))
     remove_slides(prs, {sid for sid, _ in template} - used)
     reorder_slides(prs, [p.slide_id for p in plan])
