@@ -11,6 +11,10 @@
 
 Нижняя граница чтения истории — начало самого раннего окна среди наборов и показателей
 входа, включая окна периодов сравнения, и сдвинутое назад на глубину шагов (``lookback``).
+
+Предупреждения о данных — по метаданным, без чтения: пропуски в загрузках за окно узла и
+столбцы, которых не было в файле прочитанной загрузки (столбец переименовали в выгрузке,
+сверка его не нашла, и в этой загрузке он пустой).
 """
 
 from __future__ import annotations
@@ -43,13 +47,14 @@ from autogenerator.contracts import (
     PeriodUnit,
     PluginKind,
     StepStat,
+    UploadRef,
     WindowSpec,
 )
 from autogenerator.contracts.periods import CALENDAR_UNITS, unit_shift, unit_start
 from autogenerator.plugin_host import PluginRegistry
 
 from . import datasets as dsx
-from .analysis import DatasetPlan, InputPlan, MetricPlan, ScenarioPlan, WindowPlan
+from .analysis import SERVICE_COLUMNS, DatasetPlan, InputPlan, MetricPlan, ScenarioPlan, WindowPlan
 from .cache import NodeCache, make_key
 from .context import StepRunContext, context_json, user_context
 from .duck import Duck
@@ -228,6 +233,86 @@ class _Engine:
             missing = ", ".join(_span_text(g) for g in gaps)
             self.warn(node, f"{what}: нет загрузок входа «{input_id}» за {missing}")
 
+    def read_spans(self, ip: InputPlan, node: str, lower: date | None) -> list[DateSpan]:
+        """Какие отрезки истории входа нужны узлу: окна набора или показателя за все его
+        периоды. Шагам — окна узлов, которые зависят от входа, отодвинутые назад на глубину
+        шагов (``lookback``); если нижней границы чтения нет (``lower``), — всё до конца
+        отчётного периода."""
+        base = node.split("/", 1)[0]
+        if not self.wanted(base):
+            return []
+        kind, nid = base.split(":", 1)
+        end = self.period.end_exclusive
+        if kind == "input":
+            if lower is None:
+                return [DateSpan(start=None, end_exclusive=end)]
+            # Строки между окнами шаги обрабатывают, но в отчёт они не попадают.
+            return [
+                DateSpan(start=self.back_off(ip, s.start), end_exclusive=s.end_exclusive) if s.start else s
+                for n in self.plan.input_dependents(nid)
+                for s in self.read_spans(ip, n, lower)
+            ]
+        owner = self.plan.datasets.get(nid) if kind == "dataset" else self.plan.metrics.get(nid)
+        if owner is None or owner.window is None:
+            return []
+        spans = []
+        for p in self.periods.get(base, [self.period]):
+            try:
+                span = self.resolve(owner.window, p)
+            except Exception:
+                continue  # окно с ошибкой сообщит о ней в своём узле
+            spans.append(DateSpan(start=span.start, end_exclusive=min(span.end_exclusive, end)))
+        return spans
+
+    def check_columns(self, ip: InputPlan) -> None:
+        """Предупредить, если в файле загрузки, которую читает запуск, не было столбца
+        источника, нужного сценарию: в этой загрузке он пустой, и числа по нему неверны.
+        Одно предупреждение на загрузку, со всеми такими столбцами и узлами, которым они нужны."""
+        uploads = getattr(self.history, "uploads", None)
+        if self.opts.preview or uploads is None:
+            return
+        iid = ip.spec.id
+        lower = self.lower_bound(ip)
+        spans: dict[str, list[DateSpan]] = {}
+        read: dict[DateSpan, list[UploadRef]] = {}
+        found: dict[str, UploadRef] = {}
+        missing: dict[str, dict[str, list[str]]] = {}
+        for col, nodes in self.plan.usage.get(iid, {}).items():
+            if col == ip.schema.period_column or col in SERVICE_COLUMNS:
+                continue
+            for node in nodes:
+                if node not in spans:
+                    spans[node] = self.read_spans(ip, node, lower)
+                for span in spans[node]:
+                    if span not in read:
+                        try:
+                            read[span] = list(uploads(iid, span))
+                        except Exception:
+                            read[span] = []  # ошибку истории покажет чтение входа
+                    for up in read[span]:
+                        if up.file_columns is None or col in up.file_columns:
+                            continue
+                        found[up.id] = up
+                        users = missing.setdefault(up.id, {}).setdefault(col, [])
+                        if node not in users:
+                            users.append(node)
+        for up in sorted(found.values(), key=lambda u: u.seq):
+            by_col = missing[up.id]
+            cols = [c for c in ip.schema.columns if c in by_col]
+            names = ", ".join(f"«{ip.schema.names.get(c, c)}» ({c})" for c in cols)
+            who = ", ".join(dict.fromkeys(n for c in cols for n in by_col[c]))
+            if len(cols) == 1:
+                what = f"столбца {names} — в ней он пустой, а сценарий его использует ({who})"
+                fix = "столбец переименован: добавьте новое название"
+            else:
+                what = f"столбцов {names} — в ней они пустые, а сценарий их использует ({who})"
+                fix = "столбцы переименованы: добавьте новые названия"
+            self.warn(
+                f"input:{iid}",
+                f"в загрузке #{up.seq} «{up.original_name}» ({up.period.key}) нет {what}. "
+                f"Если {fix} в aliases источника «{ip.spec.source}» и загрузите файл заново вместо этой загрузки",
+            )
+
     # --- границы и ключи кэша --------------------------------------------------------
 
     def requested_periods(self) -> dict[str, list[Period]]:
@@ -251,8 +336,7 @@ class _Engine:
         iid = ip.spec.id
         if any(iid in other.deps for other in self.plan.inputs.values()):
             return None  # вход нужен шагам другого входа целиком
-        lookback = ip.lookback
-        if lookback is None:
+        if ip.lookback is None:
             return None
         starts: list[date] = []
         for n in self.plan.input_dependents(iid):
@@ -270,11 +354,15 @@ class _Engine:
                 starts.append(span.start)
         if not starts:
             return None
-        lower = min(starts)
-        if lookback:
-            unit = ip.schema.period_unit if ip.schema.period_unit in CALENDAR_UNITS else PeriodUnit.MONTH
-            lower = unit_shift(unit_start(lower, unit), unit, -lookback)
-        return lower
+        return self.back_off(ip, min(starts))
+
+    def back_off(self, ip: InputPlan, start: date) -> date:
+        """Начало окна, отодвинутое назад на глубину шагов входа (``lookback``)."""
+        lookback = ip.lookback
+        if not lookback:
+            return start
+        unit = ip.schema.period_unit if ip.schema.period_unit in CALENDAR_UNITS else PeriodUnit.MONTH
+        return unit_shift(unit_start(start, unit), unit, -lookback)
 
     def fingerprint(self, input_id: str) -> str | None:
         fn = getattr(self.history, "fingerprint", None)
@@ -379,6 +467,8 @@ class _Engine:
         if root:
             self.skip(node, NodeKind.INPUT, root)
             return
+        # До кэша и не в кэш: проверка по метаданным загрузок дешёвая, она идёт при каждом запуске.
+        self.check_columns(ip)
         t0 = time.perf_counter()
         stop = self.opts.stop_after if (self.opts.stop_after or "").startswith(node + "/") else None
         stats: list[StepStat] = []

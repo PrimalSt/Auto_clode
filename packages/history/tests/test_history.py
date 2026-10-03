@@ -26,6 +26,7 @@ from autogenerator.history import (
     period_from_name,
     rows_outside,
     upload_period,
+    uploads_in,
 )
 
 
@@ -127,6 +128,49 @@ def test_excluded_uploads_are_skipped(uploads):
         ("x", 9),
         ("c", 3),
     ]
+
+
+def read(m: HistoryManifest, span: DateSpan) -> list[str]:
+    return [u.id for u in uploads_in(m, span)]
+
+
+def test_uploads_read_for_a_span(uploads):
+    # Январь заменён исправленной выгрузкой: за январь читается только она.
+    m = manifest(OverlapPolicy.REPLACE_PERIOD, uploads)
+    assert read(m, Period.parse("2026-01").span) == ["u3"]
+    assert read(m, Period.parse("2026-Q1").span) == ["u2", "u3"]
+    assert read(m, DateSpan(start=None, end_exclusive=date(2026, 2, 1))) == ["u3"]
+    assert read(m, Period.parse("2026-03").span) == []
+    # «Добавить» ничего не заменяет, «заменить всё» оставляет только последнюю загрузку.
+    assert read(manifest(OverlapPolicy.APPEND, uploads), Period.parse("2026-01").span) == ["u1", "u3"]
+    assert read(manifest(OverlapPolicy.REPLACE_ALL, uploads), Period.parse("2026-Q1").span) == ["u3"]
+    # «Объединить по ключам»: какие строки ушли, известно только по данным — читаются обе.
+    assert read(manifest(OverlapPolicy.MERGE_DEDUPE, uploads, keys=["key"]), Period.parse("2026-01").span) == [
+        "u1",
+        "u3",
+    ]
+    # При правиле «ask» — по выбору каждой загрузки.
+    uploads[2].overlap_policy = OverlapPolicy.APPEND
+    assert read(manifest(OverlapPolicy.ASK, uploads), Period.parse("2026-01").span) == ["u1", "u3"]
+    uploads[2].overlap_policy = OverlapPolicy.REPLACE_PERIOD
+    assert read(manifest(OverlapPolicy.ASK, uploads), Period.parse("2026-01").span) == ["u3"]
+    # Исключённая загрузка не читается, и январь снова берётся из первой.
+    uploads[2].status = UploadStatus.EXCLUDED
+    assert read(manifest(OverlapPolicy.REPLACE_PERIOD, uploads), Period.parse("2026-01").span) == ["u1"]
+
+
+def test_upload_read_until_later_ones_replace_all_its_period():
+    def ref(seq: int, period: str) -> UploadRef:
+        return UploadRef(id=f"q{seq}", seq=seq, uri="", period=Period.parse(period))
+
+    # Квартальная загрузка, потом февраль и январь: за квартал она ещё нужна (март), за
+    # январь–февраль — нет. Когда приходит и март, она не читается совсем.
+    parts = [ref(1, "2026-Q1"), ref(2, "2026-02"), ref(3, "2026-01")]
+    m = manifest(OverlapPolicy.REPLACE_PERIOD, parts)
+    assert read(m, Period.parse("2026-Q1").span) == ["q1", "q2", "q3"]
+    assert read(m, DateSpan(start=None, end_exclusive=date(2026, 3, 1))) == ["q2", "q3"]
+    parts.append(ref(4, "2026-03"))
+    assert read(manifest(OverlapPolicy.REPLACE_PERIOD, parts), Period.parse("2026-Q1").span) == ["q2", "q3", "q4"]
 
 
 def test_bounds_and_columns(uploads):

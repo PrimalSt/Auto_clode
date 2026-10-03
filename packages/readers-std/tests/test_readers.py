@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -9,10 +10,13 @@ from autogenerator.readers_std.csv_reader import CsvReader, detect_delimiter, de
 from autogenerator.readers_std.excel_reader import ExcelReader
 from autogenerator.readers_std.names import dedupe_names
 from autogenerator.readers_std.xls_reader import XlsReader
+from autogenerator.readers_std.xlsb_reader import XlsbReader
 
 DATA = Path(__file__).parent / "data"
 XLS = DATA / "обращения.xls"
 """Синтетическая выгрузка Excel 97–2003; как она сделана — data/make_xls.py."""
+XLSB = DATA / "обращения.xlsb"
+"""Та же выгрузка в двоичной книге Excel; как она сделана — data/make_xlsb.py."""
 
 
 def test_detect_encoding():
@@ -335,17 +339,19 @@ def test_excel_empty_rows_above_header(tmp_path: Path):
 
 
 def test_excel_zip_bomb_is_rejected(tmp_path: Path, monkeypatch):
-    import zipfile
-
     from autogenerator.readers_std import xlsx_head
 
-    f = _xlsx(tmp_path / "x.xlsx", {"A": [["a"], [1]]})
-    with zipfile.ZipFile(f, "a") as z:
-        z.writestr("xl/media/zeros.bin", b"\0" * 1_000_000, compress_type=zipfile.ZIP_DEFLATED)
+    books = [_xlsx(tmp_path / "x.xlsx", {"A": [["a"], [1]]}), tmp_path / "x.xlsb"]
+    books[1].write_bytes(XLSB.read_bytes())
+    for f in books:
+        with zipfile.ZipFile(f, "a") as z:
+            z.writestr("xl/media/zeros.bin", b"\0" * 1_000_000, compress_type=zipfile.ZIP_DEFLATED)
     monkeypatch.setattr(xlsx_head, "ZIP_RATIO_MIN_BYTES", 100_000)
-    for r in (ExcelReader(), XlsReader()):  # .xlsx проверяется, даже если источник — из .xls
-        with pytest.raises(AgenError, match="zip-бомб"):
-            r.sniff(f, ReadOptions())
+    # .xlsx и .xlsb (тоже zip) проверяются, даже если источник — из выгрузки другого формата.
+    for r in (ExcelReader(), XlsReader(), XlsbReader()):
+        for f in books:
+            with pytest.raises(AgenError, match="zip-бомб"):
+                r.sniff(f, ReadOptions())
 
 
 # --- Excel 97–2003 (.xls) -----------------------------------------------------------
@@ -408,3 +414,63 @@ def test_xls_reader_skips_other_office_documents(tmp_path: Path):
     junk.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 1024)
     for f in (doc, junk):
         assert not XlsReader().can_read(f) and not CsvReader().can_read(f)
+
+
+# --- Двоичная книга Excel (.xlsb) ---------------------------------------------------
+
+
+def test_xlsb_finds_header_below_parameters_and_continuation_sheet():
+    r = XlsbReader()
+    assert r.can_read(XLSB)
+    assert not ExcelReader().can_read(XLSB) and not XlsReader().can_read(XLSB) and not CsvReader().can_read(XLSB)
+    opts = r.sniff(XLSB, ReadOptions())
+    assert (opts.header_row, opts.sheets) == (5, ["Часть 1", "Часть 2"])
+    assert r.columns(XLSB, ReadOptions()) == ["Номер", "Тема", "Ответов", "Часы", "Создано", "Закрыто"]
+    batches = list(r.batches(XLSB, opts, batch_rows=4))
+    assert [b.num_rows for b in batches] == [4, 2, 4]  # порции — по листам
+    rows = [row for b in batches for row in b.to_pylist()]
+    # Строки те же, что у .xls. Даты — текстом «ГГГГ-ММ-ДД чч:мм:сс» и со встроенным форматом
+    # даты («Создано»), и со своим («Закрыто»); 1,1 записано RK-числом в сотых.
+    assert rows == _rows(XlsReader(), XLS)
+    assert rows[0] == {
+        "Номер": "1001",
+        "Тема": "Не приходит письмо",
+        "Ответов": "2",
+        "Часы": "1.5",
+        "Создано": "2026-01-09 00:00:00",
+        "Закрыто": "2026-01-09 15:30:00",
+    }
+    assert (rows[3]["Закрыто"], rows[5]["Часы"]) == (None, "1.1")
+    s = r.sample(XLSB, opts)
+    assert (s.parts, s.rows_estimate) == (["начало"], 10)
+    assert s.table.column("Создано").to_pylist()[-1] == "2026-01-31 00:00:00"
+    only = r.sniff(XLSB, ReadOptions(sheet="Часть 2", header_row=5))
+    assert [x["Номер"] for x in _rows(r, XLSB, only)] == ["1007", "1008", "1009", "1010"]
+
+
+def test_xlsb_and_xlsx_are_told_apart_by_content(tmp_path: Path):
+    # Обе книги — zip; .xlsb, названную .xlsx, узнаёт читатель xlsb, и наоборот.
+    binary = tmp_path / "обращения.xlsx"
+    binary.write_bytes(XLSB.read_bytes())
+    assert XlsbReader().can_read(binary) and not ExcelReader().can_read(binary)
+    text = _xlsx(tmp_path / "план.xlsb", {"План": [["Регион", "План"], ["Москва", 1000.5]]})
+    assert ExcelReader().can_read(text) and not XlsbReader().can_read(text)
+    # Источник помнит читатель, а выгрузку пересохранили в другом формате: книгу читает и
+    # «чужой» читатель, как бы ни назывался файл.
+    expected = _rows(XlsbReader(), XLSB)
+    for r in (XlsbReader(), ExcelReader(), XlsReader()):
+        assert _rows(r, XLSB) == _rows(r, binary) == expected
+        assert _rows(r, text) == [{"Регион": "Москва", "План": "1000.5"}]
+
+
+def test_zip_without_workbook_is_not_an_excel_book(tmp_path: Path):
+    for name in ("документ.xlsx", "документ.xlsb"):
+        f = tmp_path / name
+        with zipfile.ZipFile(f, "w") as z:
+            z.writestr("[Content_Types].xml", "<Types/>")
+            z.writestr("word/document.xml", "<document/>")
+        assert not any(r.can_read(f) for r in (ExcelReader(), XlsbReader(), XlsReader(), CsvReader()))
+        for r in (ExcelReader(), XlsbReader(), XlsReader()):
+            with pytest.raises(AgenError, match="не читается как книга Excel: это zip-архив без книги") as e:
+                r.sniff(f, ReadOptions())
+            assert "распакуйте" in (e.value.hint or "")

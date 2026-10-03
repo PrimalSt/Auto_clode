@@ -111,6 +111,8 @@ def test_uploads_round_trip_and_manifest(store: SqliteMetadataStore):
         ("sales-002", "2026-02", UploadStatus.ACTIVE, OverlapPolicy.APPEND),
     ]
     assert m.columns == {"date": "date", "amount": "float"} and m.source_version == 1
+    # Какие столбцы нашлись в файле загрузки — по сопоставлению: «amount» в нём не было.
+    assert m.uploads[0].file_columns == ["date"]
     store.delete_upload("sales-001")
     assert [u.seq for u in store.list_uploads("sales")] == [2]
     store.delete_source("sales")
