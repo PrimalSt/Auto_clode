@@ -74,11 +74,45 @@ class ReconcileStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class MappingCandidate(BaseModel):
+    """Столбец файла, который может оказаться пропавшим столбцом источника (раздел 6.2):
+    оценка ``0,5 × название + 0,2 × тип + 0,3 × значения``. Если тип или значения сравнить
+    не с чем (снимок Excel по шапке, у источника ещё нет загрузок), их вес делится между
+    остальными частями."""
+
+    file_name: str = Field(description="Название столбца в файле")
+    score: float = Field(description="Общая оценка, от 0 до 1")
+    name_score: float
+    type_score: float | None = None
+    value_score: float | None = None
+    dtype: DType | None = Field(None, description="Тип столбца файла по выборке; None — неизвестен")
+
+
 class ReconcileResult(BaseModel):
     """Результат сверки структуры файла с источником."""
 
     status: ReconcileStatus
     mapping: dict[str, str] = Field(default_factory=dict, description="Название в файле → id столбца источника")
+    proposed: dict[str, str] = Field(
+        default_factory=dict,
+        description="Предложенные пары «название в файле → id» для пропавших столбцов: их подтверждает "
+        "пользователь (экран сопоставления); подтверждённое название добавляется в aliases",
+    )
+    candidates: dict[str, list[MappingCandidate]] = Field(
+        default_factory=dict, description="id пропавшего столбца → кандидаты среди столбцов файла, лучшие первыми"
+    )
+    dependents: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="id пропавшего столбца → кто его использует (сценарий, вход, шаги, наборы, показатели)",
+    )
+    review: list[str] = Field(
+        default_factory=list,
+        description="id пропавших столбцов, для которых нужно решение пользователя: подтвердить пару из "
+        "proposed, выбрать другой столбец из candidates или оставить столбец пустым",
+    )
+    declined: list[str] = Field(
+        default_factory=list, description="id столбцов, которые пользователь решил оставить пустыми в этой загрузке"
+    )
     missing_required: list[str] = Field(
         default_factory=list, description="id столбцов, которые нужны сценарию, но не найдены"
     )

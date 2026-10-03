@@ -14,7 +14,7 @@ from typing import Annotated
 
 import typer
 
-from autogenerator.api import Home, UploadOutcome
+from autogenerator.api import Home, MappingChoice, UploadOutcome
 from autogenerator.contracts import (
     AgenError,
     CoverageReport,
@@ -28,6 +28,7 @@ from autogenerator.contracts import (
     PeriodUnit,
     RaggedRows,
     ReadOptions,
+    ReconcileResult,
     SourceSpec,
     UploadRecord,
     UploadStatus,
@@ -328,6 +329,47 @@ def _choose_policy(res: IngestResult, spec: SourceSpec, view: ProgressView) -> O
     return choices[n - 1] if 1 <= n <= len(choices) else None
 
 
+def _choose_mapping(spec: SourceSpec, files: dict[str, ReconcileResult], view: ProgressView) -> MappingChoice | None:
+    """Экран сопоставления в консоли: для каждого пропавшего столбца — кандидаты из файла.
+    Без консоли — не выбирать (загрузка остановится с подсказкой про --map)."""
+    if not sys.stdin.isatty():
+        return None
+    view.pause()
+    choice = MappingChoice()
+    for name, rec in files.items():
+        chosen = {cid: f for f, cid in rec.proposed.items()}
+        todo = rec.review or [c for c in rec.missing_required if rec.candidates.get(c)]
+        if not todo:
+            continue
+        typer.echo(f"Файл {name}: в источнике «{spec.name}» не нашлись столбцы")
+        for cid in todo:
+            col = spec.column(cid)
+            cands = rec.candidates.get(cid, [])
+            users = rec.dependents.get(cid)
+            typer.echo(f"  «{col.name}» (id {cid}){' — нужен: ' + '; '.join(users) if users else ''}")
+            for i, c in enumerate(cands, start=1):
+                mark = "  ← похоже" if chosen.get(cid) == c.file_name else ""
+                typer.echo(f"    {i} — «{c.file_name}» (сходство {round(c.score * 100)}%){mark}")
+            typer.echo("    0 — оставить столбец пустым в этой загрузке")
+            default = next((i for i, c in enumerate(cands, start=1) if chosen.get(cid) == c.file_name), 0)
+            n = typer.prompt("  Выбор", type=int, default=default)
+            if 1 <= n <= len(cands):
+                choice.pairs[cands[n - 1].file_name] = cid
+            else:
+                choice.declined.append(cid)
+    return choice if choice.pairs or choice.declined else None
+
+
+def _parse_mapping(values: list[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for v in values or []:
+        if "=" not in v:
+            raise typer.BadParameter(f"«{v}»: нужно «название в файле=id столбца»", param_hint="--map")
+        name, cid = v.rsplit("=", 1)
+        out[name.strip()] = cid.strip()
+    return out
+
+
 def _file_columns(u: UploadRecord) -> set[str]:
     return set(u.schema_snapshot.names()) if u.schema_snapshot else set(u.mapping)
 
@@ -372,6 +414,9 @@ def _print_upload(h: Home, out: UploadOutcome, verbose: bool, spec: SourceSpec, 
             _print_replaced(h, r, res.overlaps)
         else:
             typer.echo(f"  Пересекается с загрузками: {', '.join(res.overlaps)} — {POLICY[rule]}")
+    if out.remembered:
+        pairs = "; ".join(f"«{f}» → {c}" for f, c in out.remembered.items())
+        typer.echo(f"  Запомнено сопоставление: {pairs} — в следующий раз сопоставится само")
     if res.upload.empty_rows:
         typer.echo(f"  Пустых строк пропущено: {fmt_int(res.upload.empty_rows)}")
     for i in out.issues:
@@ -397,6 +442,9 @@ def _upload_files(
     profile: bool,
     verbose: bool = False,
     concat: bool = False,
+    mapping: dict[str, str] | None = None,
+    declined: list[str] | None = None,
+    accept_mapping: bool = False,
 ) -> None:
     spec = h.source(source_id).spec
     failed = 0
@@ -412,6 +460,10 @@ def _upload_files(
                     period=period,
                     overlap_policy=overlap,
                     choose_policy=lambda res: _choose_policy(res, spec, view),
+                    mapping=mapping,
+                    declined=declined or [],
+                    accept_mapping=accept_mapping,
+                    choose_mapping=lambda sp, files: _choose_mapping(sp, files, view),
                     accept_cast_errors=accept,
                     force=force,
                     profile=profile,
@@ -448,6 +500,21 @@ def upload_add(
             "склеить их по порядку в одну загрузку",
         ),
     ] = False,
+    map: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--map",
+            help="Сопоставление переименованного столбца: «название в файле=id столбца»; можно несколько раз. "
+            "Подтверждённое название запоминается в источнике",
+        ),
+    ] = None,
+    empty: Annotated[
+        list[str] | None,
+        typer.Option("--empty", help="id столбца, который оставить пустым в этой загрузке; можно несколько раз"),
+    ] = None,
+    accept_mapping: Annotated[
+        bool, typer.Option("--accept-mapping", help="Принять предложенное сопоставление переименованных столбцов")
+    ] = False,
     no_profile: Annotated[bool, typer.Option("--no-profile", help="Не считать точный профиль столбцов")] = False,
     encoding: Annotated[str | None, typer.Option()] = None,
     delimiter: Annotated[str | None, typer.Option()] = None,
@@ -458,8 +525,14 @@ def upload_add(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
     home: HomeOpt = None,
 ) -> None:
-    """Загрузить выгрузки в историю источника."""
+    """Загрузить выгрузки в историю источника.
+
+    Если в файле нет столбца, который нужен сценариям, а похожий есть, приложение предлагает
+    сопоставление и спрашивает (в консоли) или останавливает загрузку с подсказкой: принять
+    предложенное (--accept-mapping), указать своё (--map) или оставить столбец пустым (--empty).
+    """
     opts = read_options_from(encoding, delimiter, no_quote, header_row, sheet, ragged)
+    pairs = _parse_mapping(map)
     with _home(home, write=True) as h:
         try:
             h.source(source_id)
@@ -477,6 +550,9 @@ def upload_add(
             not no_profile,
             verbose,
             concat,
+            pairs,
+            empty,
+            accept_mapping,
         )
 
 

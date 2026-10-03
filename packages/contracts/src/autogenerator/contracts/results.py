@@ -133,6 +133,17 @@ class RenderResult(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
 
 
+class EnvironmentInfo(BaseModel):
+    """Версии, от которых зависит результат запуска (F-608): приложение, Python, библиотеки
+    вычислений и сборки, плагины и отпечаток окружения."""
+
+    app_version: str
+    python: str
+    libraries: dict[str, str] = Field(default_factory=dict, description="Библиотека → версия")
+    plugins: dict[str, str] = Field(default_factory=dict, description="«вид:имя» → версия пакета плагина")
+    env_hash: str = Field("", description="sha256 списка установленных пакетов с версиями")
+
+
 class RunResult(BaseModel):
     """Итог запуска сценария: что собрано, за какой период и что пошло не так."""
 
@@ -148,6 +159,7 @@ class RunResult(BaseModel):
     from_home: list[str] = Field(default_factory=list, description="Входы, чья история взята из папки данных")
     image_path: str | None = Field(None, description="Картинка слайда (превью слайда)")
     image_note: str | None = Field(None, description="Пометка к картинке: «приблизительно», если рисовал не PowerPoint")
+    environment: EnvironmentInfo | None = None
     seconds: float = 0.0
 
     @property

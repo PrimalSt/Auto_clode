@@ -15,15 +15,21 @@ from autogenerator.contracts import AgenError, ErrorCode, ThemeManifest
 IMAGE_TIMEOUT = 120  # с
 
 
-def import_theme(path: str | Path, out_dir: str | Path | None = None) -> ThemeManifest:
+def import_theme(
+    path: str | Path,
+    out_dir: str | Path | None = None,
+    roles: dict[str, str] | None = None,
+    strict_roles: bool = False,
+) -> ThemeManifest:
     """Импорт и проверка шаблона. Без ``out_dir`` рабочая копия — во временной папке и после
-    импорта удаляется: остаётся только манифест (для отчёта и заготовки)."""
+    импорта удаляется: остаётся только манифест (для отчёта и заготовки). ``roles`` —
+    подтверждённые роли макетов (роль → ключ макета)."""
     from autogenerator.theme import import_template
 
     if out_dir is not None:
-        return import_template(path, out_dir)
+        return import_template(path, out_dir, roles=roles, strict_roles=strict_roles)
     with tempfile.TemporaryDirectory(prefix="agen-theme-") as tmp:
-        return import_template(path, tmp)
+        return import_template(path, tmp, roles=roles, strict_roles=strict_roles)
 
 
 def describe_theme(m: ThemeManifest, *, layouts: bool = False, verbose: bool = False, name: str | None = None) -> str:

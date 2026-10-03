@@ -202,6 +202,17 @@ class DataFolder:
     def upload_dir(self, source_id: str, upload_id: str) -> Path:
         return self.source_dir(source_id) / "uploads" / upload_id
 
+    def theme_dir(self, theme_id: str) -> Path:
+        return self.root / self.workspace / "themes" / theme_id
+
+    def theme_file(self, theme_id: str, number: int, suffix: str = ".pptx") -> Path:
+        """Файл версии шаблона: ``local/themes/{id}/{номер}.pptx``."""
+        return self.theme_dir(theme_id) / f"{number}{suffix}"
+
+    def output_dir(self, run_id: str) -> Path:
+        """Отчёт запуска: ``local/outputs/{run_id}/``."""
+        return self.root / self.workspace / "outputs" / run_id
+
     def lock(self, owner: str = "cli") -> FolderLock:
         return FolderLock(self.root / LOCK_NAME, owner)
 

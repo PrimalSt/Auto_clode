@@ -2,10 +2,11 @@
 
 Роль — то, на что ссылается сценарий (``layout: title_and_content``). Приложение предлагает
 макет под каждую роль по составу плейсхолдеров (``agen theme check --layouts`` показывает,
-какой макет взят под какую роль); подтверждать роли пользователь будет в окне приложения
-(M4). Недостающую роль приложение строит из ближайшего макета: «пустой» — из макета только
-с заголовком (заголовок удаляется), «заголовок, текст и блок» — из макета с двумя областями,
-«финальный» — из титульного.
+какой макет взят под какую роль), пользователь подтверждает или меняет их (``agen theme
+roles``, окно «Оформление»): подтверждённые роли хранятся в версии шаблона. Недостающую роль
+приложение строит из ближайшего макета: «пустой» — из макета только с заголовком (заголовок
+удаляется), «заголовок, текст и блок» — из макета с двумя областями, «финальный» — из
+титульного.
 """
 
 from __future__ import annotations
@@ -15,7 +16,16 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from autogenerator.contracts import Geometry, LayoutInfo, LayoutRole, PlaceholderInfo, RoleBinding, SlotInfo
+from autogenerator.contracts import (
+    AgenError,
+    ErrorCode,
+    Geometry,
+    LayoutInfo,
+    LayoutRole,
+    PlaceholderInfo,
+    RoleBinding,
+    SlotInfo,
+)
 from autogenerator.contracts.ooxml import P
 from autogenerator.contracts.theme import EMU_PER_INCH
 
@@ -235,8 +245,67 @@ def _rank(info: LayoutInfo, slide_area: int) -> tuple[int, int, int, float, int]
     return (1 if x.pictures else 0, 0 if info.preserve else 1, -info.slides, -round(content, 2), info.master)
 
 
-def guess_roles(layouts: list[LayoutInfo], width: int, height: int) -> tuple[list[RoleBinding], list[str]]:
-    """Роли макетов: предложенные по составу плейсхолдеров и построенные для недостающих."""
+ROLE_NAMES = {
+    LayoutRole.TITLE: "титульный",
+    LayoutRole.SECTION: "раздел",
+    LayoutRole.TITLE_AND_CONTENT: "заголовок и блок",
+    LayoutRole.TITLE_AND_TWO_CONTENT: "заголовок и два блока",
+    LayoutRole.TITLE_TEXT_AND_CONTENT: "заголовок, текст и блок",
+    LayoutRole.TITLE_ONLY: "только заголовок",
+    LayoutRole.BLANK: "пустой",
+    LayoutRole.FINAL: "финальный",
+}
+
+
+def bind_role(role: LayoutRole, info: LayoutInfo, width: int, height: int) -> RoleBinding:
+    """Роль на макете, который выбрал пользователь (подтверждение ролей, F-402). Макет должен
+    подходить роли: у «заголовка и двух блоков» — две области содержимого и т. д.; «пустой»
+    можно поставить на любой макет с геометрией — его заголовок тогда удаляется."""
+    what = f"Макет «{info.name}» не подходит роли «{ROLE_NAMES[role]}»"
+    if not has_geometry(info):
+        raise AgenError(ErrorCode.LAYOUT_MISSING, f"{what}: у его плейсхолдеров нет размеров и положения")
+    x = _parts(info, width * height)
+    regions = x.titles + x.subtitles + x.content + x.small
+    need = {
+        LayoutRole.TITLE_AND_CONTENT: (len(x.content) >= 1 and bool(x.titles), "нужны заголовок и область содержимого"),
+        LayoutRole.TITLE_AND_TWO_CONTENT: (len(x.content) >= 2, "нужны две области содержимого"),
+        LayoutRole.TITLE_TEXT_AND_CONTENT: (
+            len(x.content) >= 1 and len(x.content) + len(x.small) >= 2,
+            "нужны область текста и область содержимого",
+        ),
+        LayoutRole.TITLE_ONLY: (bool(x.titles), "нужен плейсхолдер заголовка"),
+        LayoutRole.TITLE: (bool(regions), "нужен плейсхолдер для названия"),
+        LayoutRole.SECTION: (bool(regions), "нужен плейсхолдер для названия раздела"),
+        LayoutRole.FINAL: (True, ""),
+        LayoutRole.BLANK: (True, ""),
+    }
+    ok, why = need[role]
+    if not ok:
+        raise AgenError(ErrorCode.LAYOUT_MISSING, f"{what}: {why}")
+    binding = RoleBinding(role=role, layout_key=info.key, layout_name=info.name, slots=[], guessed=False)
+    if role == LayoutRole.BLANK:
+        binding.drop_placeholders = [p.idx for p in regions]
+        binding.slots = [SlotInfo(name="body", geometry=_full(width, height))]
+        return binding
+    try:
+        binding.slots = _slots(role, info, width, height)
+    except (StopIteration, ValueError, IndexError):
+        raise AgenError(ErrorCode.LAYOUT_MISSING, what) from None
+    return binding
+
+
+def guess_roles(
+    layouts: list[LayoutInfo],
+    width: int,
+    height: int,
+    overrides: dict[str, str] | None = None,
+    strict: bool = False,
+) -> tuple[list[RoleBinding], list[str]]:
+    """Роли макетов: подтверждённые пользователем (``overrides``: роль → ключ макета),
+    предложенные по составу плейсхолдеров и построенные для недостающих. Построенные роли
+    следуют за подтверждёнными: финальная без своего макета берётся с подтверждённого
+    титульного. ``strict`` — неподходящий или пропавший макет подтверждения — ошибка, иначе
+    роль предлагается заново с замечанием (так при повторном импорте шаблона)."""
     area = width * height
     candidates: dict[LayoutRole, list[LayoutInfo]] = {}
     for info in layouts:
@@ -251,6 +320,21 @@ def guess_roles(layouts: list[LayoutInfo], width: int, height: int) -> tuple[lis
         )
     by_key = {i.key: i for i in layouts}
     notes: list[str] = []
+    for name, key in (overrides or {}).items():
+        try:
+            role = LayoutRole(name)
+        except ValueError:
+            known = ", ".join(r.value for r in LayoutRole)
+            raise AgenError(ErrorCode.SPEC_INVALID, f"Нет роли макета «{name}» (есть: {known})") from None
+        layout = by_key.get(key)
+        try:
+            if layout is None:
+                raise AgenError(ErrorCode.LAYOUT_MISSING, f"Макета с id {key} в шаблоне нет")
+            roles[role] = bind_role(role, layout, width, height)
+        except AgenError as e:
+            if strict:
+                raise
+            notes.append(f"Подтверждение роли «{ROLE_NAMES[role]}» не перенесено ({e.message}): роль предложена заново")
 
     def derive(role: LayoutRole, base: LayoutRole, how: str) -> None:
         src = roles.get(base)
