@@ -203,10 +203,12 @@ def test_marker_color_by_sign():
     assert colored(by_metric, {"d": 0.05}) == {"Δ ": None, "5,0%": "2E7559", " к марту": None}
     assert colored(by_metric, {"d": -0.05})["-5,0%"] == "C00000"
     assert colored(by_metric, {"d": 0})["0,0%"] is None
-    # by важнее показателя привязки и текста; пустой by — знак из текста
+    # by важнее показателя привязки и текста; пустой by — знак из текста, а не из показателя привязки
     assert colored({"metric": "d", "color": {"by": "e"}}, {"d": -3, "e": 1})["-3"] == "2E7559"
     assert colored({"value": "-1", "color": {"by": "e"}}, {"e": 0.5})["-1"] == "2E7559"
     assert colored({"value": "(-1%)", "color": {"by": "e"}}, {"e": None})["(-1%)"] == "C00000"
+    assert colored({"metric": "d", "color": {"by": "e"}}, {"d": 5, "e": None})["5"] is None
+    assert colored({"value": "-1", "color": {"by": "e"}}, {"e": 10**400})["-1"] == "C00000"  # не влезает во float
     for text, rgb in (("(+3%)", "2E7559"), ("(-3%)", "C00000"), ("(\u22123%)", "C00000"), ("(0%)", None)):
         assert colored({"value": text, "color": "sign"})[text] == rgb
     text = {"text": "({{ metrics.d | number(sign=true) }}%)", "color": "sign"}
@@ -233,6 +235,19 @@ def test_marker_color_replaces_template_fill_in_schema_order():
     # ноль без цвета — цвет шаблона остаётся
     assert runs["0"].find(f"{A}solidFill/{A}srgbClr").get("val") == "123456"
     assert runs[" и "].find(f"{A}solidFill/{A}srgbClr").get("val") == "123456"
+
+    # без заливки в шаблоне: перед эффектами и шрифтом; другая заливка (gradFill) убирается
+    for children, expected in (
+        (["ln", "effectLst", "latin"], ["ln", "solidFill", "effectLst", "latin"]),
+        (["gradFill", "highlight", "latin"], ["solidFill", "highlight", "latin"]),
+    ):
+        slide, box, info = text_slide(["{{X}}"])
+        rpr = box.text_frame.paragraphs[0].runs[0]._r.find(f"{A}rPr")
+        for tag in children:
+            etree.SubElement(rpr, f"{A}{tag}")
+        run(MarkersBlock(), slide_target(slide, info), {"bindings": {"X": {"value": "-5", "color": "sign"}}})
+        rpr = box.text_frame.paragraphs[0].runs[0]._r.find(f"{A}rPr")
+        assert [etree.QName(e).localname for e in rpr] == expected
 
 
 def test_marker_color_skips_blank_and_preview():

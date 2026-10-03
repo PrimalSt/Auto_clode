@@ -23,8 +23,8 @@ ARCHITECTURE.md, раздел 6.5).
 Цвет значения по знаку — ``color``: ``sign`` — положительное зелёным, отрицательное красным,
 ноль как в шаблоне; ``"1F4E79"`` — один цвет при любом знаке; полностью — ``positive``,
 ``negative``, ``zero`` и ``by`` (показатель, знак которого выбирает цвет). Без ``by`` знак
-берётся из показателя привязки, у текста и готового значения — из самого текста: «+» —
-положительное, «-» или «−» — отрицательное.
+берётся из показателя привязки, у текста и готового значения (и если показатель пуст) — из
+самого текста: «+» — положительное, «-» или «−» — отрицательное.
 
 Замена: PowerPoint режет текст на прогоны по языку и флагу орфографии, поэтому текст абзаца
 склеивается из прогонов, полей и переносов, метки ищутся в склеенном тексте и заменяются
@@ -261,21 +261,21 @@ def _sign(v: Any) -> int | None:
         return None
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return (x > 0) - (x < 0)
 
 
 def value_color(b: MarkerBinding, value: str, metrics: dict[str, Any]) -> str | None:
-    """Цвет значения по знаку; ``None`` — как в шаблоне. Знак — по показателю ``by``, иначе по
-    показателю привязки, иначе по тексту значения: «+» — плюс, «-» или «−» — минус, иначе ноль."""
+    """Цвет значения по знаку; ``None`` — как в шаблоне. Знак — по показателю ``by`` (без него —
+    по показателю привязки), а если показателя нет или он пуст — по тексту значения: «+» — плюс,
+    «-» или «−» — минус, иначе ноль. Пустой показатель ``by`` не подменяется показателем привязки:
+    иначе выручка с ``by: revenue_change`` без прошлого периода окрасилась бы как рост."""
     c = b.color
     if c is None:
         return None
-    sign = None
-    for metric in (c.by, b.metric):
-        if sign is None and metric is not None:
-            sign = _sign(metrics.get(metric))
+    metric = c.by or b.metric
+    sign = None if metric is None else _sign(metrics.get(metric))
     if sign is None:
         sign = 1 if "+" in value else -1 if "-" in value or "\u2212" in value else 0
     return c.pick(sign)
