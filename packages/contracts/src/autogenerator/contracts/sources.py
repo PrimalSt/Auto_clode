@@ -114,7 +114,7 @@ class SourceSpec(BaseModel):
     id: str
     name: str
     version: int = 1
-    format: str | None = Field(None, description="csv, xlsx; пусто — определить по файлу")
+    format: str | None = Field(None, description="csv, xlsx, xls; пусто — определить по файлу")
     options: ReadOptions = Field(default_factory=ReadOptions)
     period_column: str
     period_type: PeriodUnit = PeriodUnit.MONTH

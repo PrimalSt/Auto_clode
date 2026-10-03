@@ -7,6 +7,11 @@ from autogenerator.contracts import AgenError, ReadOptions
 from autogenerator.readers_std.csv_reader import CsvReader, detect_delimiter, detect_encoding
 from autogenerator.readers_std.excel_reader import ExcelReader
 from autogenerator.readers_std.names import dedupe_names
+from autogenerator.readers_std.xls_reader import XlsReader
+
+DATA = Path(__file__).parent / "data"
+XLS = DATA / "обращения.xls"
+"""Синтетическая выгрузка Excel 97–2003; как она сделана — data/make_xls.py."""
 
 
 def test_detect_encoding():
@@ -228,6 +233,14 @@ def test_excel_sample_and_dates(tmp_path: Path):
     assert s.table.column("N").to_pylist()[-1] == "20000"
 
 
+def test_excel_empty_rows_above_header(tmp_path: Path):
+    # Номер строки шапки считается от верха листа, хотя fastexcel сам пропустил бы пустые строки.
+    f = _xlsx(tmp_path / "x.xlsx", {"A": [[], [], ["Регион", "Сумма"], ["Москва", 10]]})
+    r = ExcelReader()
+    assert r.sniff(f, ReadOptions()).header_row == 3
+    assert _rows(r, f) == [{"Регион": "Москва", "Сумма": "10"}]
+
+
 def test_excel_zip_bomb_is_rejected(tmp_path: Path, monkeypatch):
     import zipfile
 
@@ -239,3 +252,57 @@ def test_excel_zip_bomb_is_rejected(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(xlsx_head, "ZIP_RATIO_MIN_BYTES", 100_000)
     with pytest.raises(AgenError, match="zip-бомб"):
         ExcelReader().sniff(f, ReadOptions())
+
+
+# --- Excel 97–2003 (.xls) -----------------------------------------------------------
+
+
+def test_xls_finds_header_below_parameters_and_continuation_sheet():
+    r = XlsReader()
+    assert r.can_read(XLS)
+    assert not ExcelReader().can_read(XLS) and not CsvReader().can_read(XLS)
+    opts = r.sniff(XLS, ReadOptions())
+    assert (opts.header_row, opts.sheets) == (4, ["Часть 1", "Часть 2"])
+    assert r.columns(XLS, ReadOptions()) == ["Номер", "Тема", "Ответов", "Часы", "Создано", "Закрыто"]
+    batches = list(r.batches(XLS, opts, batch_rows=4))
+    assert [b.num_rows for b in batches] == [4, 2, 4]  # порции — по листам
+    rows = [row for b in batches for row in b.to_pylist()]
+    assert [x["Номер"] for x in rows] == [str(n) for n in range(1001, 1011)]
+    # Числа и даты — текстом, как у .xlsx: даты Excel — «ГГГГ-ММ-ДД чч:мм:сс».
+    assert rows[0] == {
+        "Номер": "1001",
+        "Тема": "Не приходит письмо",
+        "Ответов": "2",
+        "Часы": "1.5",
+        "Создано": "2026-01-09 00:00:00",
+        "Закрыто": "2026-01-09 15:30:00",
+    }
+    assert (rows[3]["Часы"], rows[3]["Закрыто"]) == ("12.75", None)
+    assert rows[-1]["Часы"] == "8"
+    s = r.sample(XLS, opts)
+    assert (s.parts, s.rows_estimate) == (["начало"], 10)
+    assert s.table.column("Создано").to_pylist()[-1] == "2026-01-31 00:00:00"
+    # Лист можно указать явно; строку заголовков — тоже, по счёту от верха листа.
+    only = r.sniff(XLS, ReadOptions(sheet="Часть 2", header_row=4))
+    assert [x["Номер"] for x in _rows(r, XLS, only)] == ["1007", "1008", "1009", "1010"]
+
+
+def test_excel_reads_book_whatever_its_extension(tmp_path: Path):
+    old = tmp_path / "обращения.xlsx"
+    old.write_bytes(XLS.read_bytes())
+    assert XlsReader().can_read(old) and not ExcelReader().can_read(old)
+    assert len(_rows(XlsReader(), old)) == 10
+    new = _xlsx(tmp_path / "план.xls", {"План": [["Регион", "План"], ["Москва", 1000.5]]})
+    assert ExcelReader().can_read(new) and not XlsReader().can_read(new)
+    assert _rows(ExcelReader(), new) == [{"Регион": "Москва", "План": "1000.5"}]
+
+
+def test_xls_reader_skips_other_office_documents(tmp_path: Path):
+    # Подпись OLE2 — у любого двоичного документа Office. В первом файле вместо потока
+    # книги — поток с другим именем (как в документе Word), во втором за подписью — мусор.
+    doc = tmp_path / "документ.xls"
+    doc.write_bytes(XLS.read_bytes().replace("Workbook".encode("utf-16-le"), "Document".encode("utf-16-le")))
+    junk = tmp_path / "мусор.xls"
+    junk.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 1024)
+    for f in (doc, junk):
+        assert not XlsReader().can_read(f) and not CsvReader().can_read(f)

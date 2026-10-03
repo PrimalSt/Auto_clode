@@ -50,10 +50,13 @@ def choose_reader(path: Path, registry: PluginRegistry, fmt: str | None = None) 
     with path.open("rb") as f:
         head = f.read(8)
     if head == OLE2_SIGNATURE:
+        # Такая подпись не только у .xls (их узнаёт читатель), но и у документов Word, писем
+        # Outlook и книг, зашифрованных паролем.
         raise AgenError(
             ErrorCode.FILE_FORMAT,
-            f"{path.name} — файл старого формата Excel 97–2003 (.xls); он пока не поддерживается",
-            hint="Откройте файл в Excel и сохраните как .xlsx (Книга Excel).",
+            f"{path.name} не читается как книга Excel: это документ Office другого вида "
+            "(Word, Outlook) или книга, защищённая паролем",
+            hint="Если это книга Excel, откройте её в Excel, снимите пароль и сохраните как .xlsx (Книга Excel).",
         )
     known = ", ".join(sorted({f for r in readers for f in r.formats})) or "нет читателей"
     raise AgenError(ErrorCode.FILE_FORMAT, f"Не знаю, как читать {path.name}. Поддерживаются: {known}")

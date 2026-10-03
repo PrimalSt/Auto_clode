@@ -47,6 +47,16 @@ def test_unknown_format(tmp_path: Path, registry, jsonl):
         inspect_file(f, registry)
 
 
+def test_office_document_that_no_reader_opens(tmp_path: Path, registry):
+    # Подпись двоичного документа Office (OLE2): книгу .xls узнал бы читатель, а это
+    # документ Word, письмо Outlook или книга с паролем.
+    f = tmp_path / "a.xls"
+    f.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512)
+    with pytest.raises(AgenError, match="не читается как книга Excel") as e:
+        inspect_file(f, registry)
+    assert "пароль" in (e.value.hint or "")
+
+
 def test_write_partitions_by_month(tmp_path: Path, registry, jsonl):
     f = jsonl(
         tmp_path / "a.jsonl",

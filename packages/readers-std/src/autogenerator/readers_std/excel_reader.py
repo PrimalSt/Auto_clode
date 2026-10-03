@@ -9,6 +9,8 @@
 данными и все следующие листы с такой же шапкой — так учётные системы разбивают выгрузки
 больше миллиона строк. Листы читаются по очереди, в памяти один лист. Перед чтением
 файл проверяется на zip-бомбу. Объединённые ячейки шапки — v1.
+
+Те же правила у .xls (``xls_reader.py``): там свои только методы доступа к книге.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import ClassVar
 
 import fastexcel
 import pyarrow as pa
@@ -46,7 +49,7 @@ def _norm_header(cells: list[str | None]) -> list[str]:
 class ExcelReader(ReaderPlugin):
     name = "xlsx"
     title = "Excel"
-    formats = ("xlsx", "xlsm")
+    formats: ClassVar[tuple[str, ...]] = ("xlsx", "xlsm")
     sample_reads_all = True
 
     def can_read(self, path: Path) -> bool:
@@ -54,6 +57,24 @@ class ExcelReader(ReaderPlugin):
             return False
         with zipfile.ZipFile(path) as z:
             return "xl/workbook.xml" in z.namelist()
+
+    # --- доступ к книге (у .xls — свой, xls_reader.py) ---------------------------------
+
+    def _check_file(self, path: Path) -> None:
+        check_zip(path)
+
+    def _sheet_names(self, path: Path) -> list[str]:
+        return sheet_names(path)
+
+    def _head_rows(self, path: Path, sheet: str, n_rows: int) -> list[list[str | None]]:
+        return head_rows(path, sheet, n_rows)
+
+    def _open(self, path: Path) -> fastexcel.ExcelReader:
+        # fastexcel выбирает формат книги по расширению. Если оно чужое (.xlsx, сохранённый
+        # как .xls, и наоборот), книга открывается из байтов: так формат узнаётся по содержимому.
+        if path.suffix.lower().lstrip(".") in self.formats:
+            return fastexcel.read_excel(str(path))
+        return fastexcel.read_excel(path.read_bytes())
 
     # --- какие листы и где шапка --------------------------------------------------------
 
@@ -73,8 +94,8 @@ class ExcelReader(ReaderPlugin):
         return ref
 
     def sniff(self, path: Path, options: ReadOptions) -> ReadOptions:
-        check_zip(path)
-        names = sheet_names(path)
+        self._check_file(path)
+        names = self._sheet_names(path)
         if not names:
             raise AgenError(ErrorCode.FILE_FORMAT, f"В файле {path.name} нет листов")
         heads: dict[str, list[list[str | None]]] = {}
@@ -83,20 +104,20 @@ class ExcelReader(ReaderPlugin):
         else:
             chosen = []
             for name in names:
-                heads[name] = head_rows(path, name, HEAD_ROWS)
+                heads[name] = self._head_rows(path, name, HEAD_ROWS)
                 if any(any(c not in (None, "") for c in r) for r in heads[name]):
                     chosen = [name]
                     break
             if not chosen:
                 raise AgenError(ErrorCode.FILE_FORMAT, f"В файле {path.name} все листы пустые")
         first = chosen[0]
-        rows = heads.get(first) or head_rows(path, first, HEAD_ROWS)
+        rows = heads.get(first) or self._head_rows(path, first, HEAD_ROWS)
         header_row = options.header_row or detect_header_row(rows, data_width(rows)) or 1
         if not options.sheets:
             # Следующие листы с той же шапкой — продолжение выгрузки.
             header = _norm_header(rows[header_row - 1] if header_row <= len(rows) else [])
             for name in names[names.index(first) + 1 :]:
-                other = head_rows(path, name, header_row)
+                other = self._head_rows(path, name, header_row)
                 if header and len(other) >= header_row and _norm_header(other[header_row - 1]) == header:
                     chosen.append(name)
         sheet: str | list[str | int] = chosen[0] if len(chosen) == 1 else list(chosen)
@@ -106,8 +127,9 @@ class ExcelReader(ReaderPlugin):
 
     def _load(self, path: Path, sheet: str, header_row: int) -> tuple[list[str], pa.RecordBatch]:
         try:
-            reader = fastexcel.read_excel(str(path))
-            batch = reader.load_sheet(sheet, header_row=None, dtypes="string", eager=True)
+            # skip_rows=0: строки считаются от верха листа, как в шапке из _head_rows
+            # (иначе fastexcel пропускает пустые строки над данными и номер шапки сдвигается).
+            batch = self._open(path).load_sheet(sheet, header_row=None, skip_rows=0, dtypes="string", eager=True)
         except Exception as e:
             raise AgenError(ErrorCode.FILE_FORMAT, f"Не удалось прочитать лист «{sheet}» файла {path.name}: {e}") from e
         assert isinstance(batch, pa.RecordBatch)
@@ -135,7 +157,7 @@ class ExcelReader(ReaderPlugin):
     ) -> Iterator[pa.RecordBatch]:
         opts = options if options.header_row and options.sheet is not None else self.sniff(path, options)
         assert opts.header_row
-        names_all = sheet_names(path)
+        names_all = self._sheet_names(path)
         sheets = [self._resolve_sheet(path, names_all, s) for s in opts.sheets or [0]]
         first_names: list[str] | None = None
         for i, sheet in enumerate(sheets, start=1):
@@ -156,11 +178,11 @@ class ExcelReader(ReaderPlugin):
             progress(ReadProgress("листы прочитаны", len(sheets), len(sheets), "sheets"))
 
     def columns(self, path: Path, options: ReadOptions) -> list[str]:
-        """Шапка без чтения листа: потоковым разбором первых строк XML."""
+        """Шапка без чтения листа: только первые строки (у .xlsx — потоковым разбором XML)."""
         opts = options if options.header_row and options.sheet is not None else self.sniff(path, options)
         assert opts.header_row
-        first = self._resolve_sheet(path, sheet_names(path), (opts.sheets or [0])[0])
-        rows = head_rows(path, first, opts.header_row)
+        first = self._resolve_sheet(path, self._sheet_names(path), (opts.sheets or [0])[0])
+        rows = self._head_rows(path, first, opts.header_row)
         head = rows[opts.header_row - 1] if len(rows) >= opts.header_row else []
         width = len(head)
         while width and not (head[width - 1] or "").strip():

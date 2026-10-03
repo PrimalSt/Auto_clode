@@ -51,6 +51,28 @@ def test_draft_source_from_excel(tmp_path: Path):
     assert spec.period_type == PeriodUnit.QUARTER
 
 
+def test_xls_export_from_draft_to_upload(tmp_path: Path):
+    """Excel 97–2003: над шапкой — параметры отчёта, выгрузка — на двух листах с одной шапкой."""
+    xls = Path(__file__).resolve().parents[2] / "readers-std" / "tests" / "data" / "обращения.xls"
+    spec, snap = draft_source(xls, "tickets")
+    assert (snap.format, snap.options.header_row, snap.sheets) == ("xls", 4, ["Часть 1", "Часть 2"])
+    assert {c.name: c.dtype for c in spec.columns} == {
+        "Номер": DType.STRING,
+        "Тема": DType.STRING,
+        "Ответов": DType.INT,
+        "Часы": DType.FLOAT,
+        "Создано": DType.DATE,
+        "Закрыто": DType.DATETIME,
+    }
+    assert spec.period_column == "sozdano" and spec.period_type == PeriodUnit.MONTH
+    res = ingest_upload(
+        IngestRequest(source=spec, path=str(xls), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
+    )
+    assert res.snapshot.sample_rows == 0  # снимок по шапке, как у .xlsx
+    assert res.period.key == "2026-01" and res.upload.rows == 10
+    assert (res.profile["chasy"].min, res.profile["chasy"].max) == ("0.25", "12.75")
+
+
 # --- Выгрузки по образцу настоящих (синтетические данные) ------------------------------
 
 

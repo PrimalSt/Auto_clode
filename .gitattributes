@@ -6,4 +6,5 @@ examples/**/*.csv -text
 *.pptx binary
 *.potx binary
 *.xlsx binary
+*.xls binary
 *.parquet binary
