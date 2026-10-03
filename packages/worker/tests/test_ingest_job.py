@@ -52,11 +52,13 @@ def test_draft_source_from_excel(tmp_path: Path):
     assert spec.period_type == PeriodUnit.QUARTER
 
 
-def test_xls_export_from_draft_to_upload(tmp_path: Path):
-    """Excel 97–2003: над шапкой — параметры отчёта, выгрузка — на двух листах с одной шапкой."""
-    xls = Path(__file__).resolve().parents[2] / "readers-std" / "tests" / "data" / "обращения.xls"
-    spec, snap = draft_source(xls, "tickets")
-    assert (snap.format, snap.options.header_row, snap.sheets) == ("xls", 5, ["Часть 1", "Часть 2"])
+@pytest.mark.parametrize("name", ["обращения.xls", "обращения.xlsb"])
+def test_xls_and_xlsb_export_from_draft_to_upload(tmp_path: Path, name: str):
+    """Excel 97–2003 и двоичная книга Excel: над шапкой — параметры отчёта, выгрузка — на
+    двух листах с одной шапкой."""
+    book = Path(__file__).resolve().parents[2] / "readers-std" / "tests" / "data" / name
+    spec, snap = draft_source(book, "tickets")
+    assert (snap.format, snap.options.header_row, snap.sheets) == (book.suffix[1:], 5, ["Часть 1", "Часть 2"])
     assert {c.name: c.dtype for c in spec.columns} == {
         "Номер": DType.STRING,
         "Тема": DType.STRING,
@@ -67,7 +69,7 @@ def test_xls_export_from_draft_to_upload(tmp_path: Path):
     }
     assert spec.period_column == "sozdano" and spec.period_type == PeriodUnit.MONTH
     res = ingest_upload(
-        IngestRequest(source=spec, path=str(xls), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
+        IngestRequest(source=spec, path=str(book), upload_id="u1", upload_seq=1, out_dir=str(tmp_path / "u1"))
     )
     assert res.snapshot.sample_rows == 0  # снимок по шапке, как у .xlsx
     assert res.period.key == "2026-01" and res.upload.rows == 10
