@@ -100,8 +100,12 @@ class Heatmap(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     columns: list[str] = Field(min_length=1, description="Столбцы набора, выводимые в таблице")
-    min: float | None = Field(None, description="Значение первого цвета; пусто — наименьшее в ячейках карты")
-    max: float | None = Field(None, description="Значение последнего цвета; пусто — наибольшее в ячейках карты")
+    min: float | None = Field(
+        None, allow_inf_nan=False, description="Значение первого цвета; пусто — наименьшее в ячейках карты"
+    )
+    max: float | None = Field(
+        None, allow_inf_nan=False, description="Значение последнего цвета; пусто — наибольшее в ячейках карты"
+    )
     colors: list[str] = Field(
         ["F8696B", "FFEB84", "63BE7B"], min_length=2, description="Цвета шкалы RRGGBB: красный, жёлтый, зелёный"
     )
@@ -122,7 +126,10 @@ class Heatmap(BaseModel):
 
     def color(self, value: float, lo: float, hi: float) -> str:
         if hi > lo:
-            ratio = min(max((value - lo) / (hi - lo), 0.0), 1.0)
+            # Разность огромных значений может переполниться (∞/∞ — не число): тогда по половинам.
+            span = hi - lo
+            ratio = (value - lo) / span if math.isfinite(span) else (value / 2 - lo / 2) / (hi / 2 - lo / 2)
+            ratio = min(max(ratio, 0.0), 1.0)
         else:  # min не меньше max: например, все значения карты равны
             ratio = 0.0 if value < lo else 1.0 if value > hi else 0.5
         n = len(self.colors)

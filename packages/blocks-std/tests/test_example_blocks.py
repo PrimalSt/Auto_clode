@@ -1,5 +1,6 @@
 """Блоки слайдов-образцов на синтетическом шаблоне examples/templates/synthetic.pptx."""
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -544,6 +545,19 @@ def test_table_fill_heatmap_auto_range_and_explicit_fill_wins():
         TableFillBlock().parse_params({**params, "heatmap": {"columns": ["a1"], "min": 1, "max": 1}})
 
 
+def test_table_fill_heatmap_edge_values():
+    # Разность огромных значений не помещается во float — шкала всё равно считается.
+    data = pa.table({"k": ["а", "б", "в"], "v": ["-1e308", "0", "1e308"]})
+    shape, _ = fill_table({"dataset": "t", "heatmap": {"columns": ["v"]}}, data)
+    assert fills(shape, 1) == ["F8696B", "FFEB84", "63BE7B"]
+    # Одно значение (наименьшее равно наибольшему) — середина шкалы.
+    shape, _ = fill_table({"dataset": "t", "heatmap": {"columns": ["v"]}}, pa.table({"k": ["а"], "v": [5.0]}))
+    assert fills(shape, 1) == ["FFEB84"]
+    for bad in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="finite number"):
+            TableFillBlock().parse_params({"dataset": "t", "heatmap": {"columns": ["v"], "max": bad}})
+
+
 def test_table_fill_fill_keeps_schema_order():
     from lxml import etree
 
@@ -610,9 +624,14 @@ def test_table_fill_inherited_font_size():
         master_style(slide).attrib.pop("sz")
         default_style(slide).attrib.pop("sz")
 
+    def header_15(slide, shape):
+        master_14(slide, shape)
+        shape.table.cell(0, 0).text_frame.paragraphs[0].runs[0].font.size = Pt(15)
+
     assert sizes(master_14) == {"1400"}
     assert sizes(presentation_16) == {"1600"}
     assert sizes(nothing) == {"1800"}
+    assert sizes(header_15) == {"1500"}  # кегль из ячеек шаблона важнее унаследованного
 
 
 def test_table_fill_keeps_template_row_heights():
