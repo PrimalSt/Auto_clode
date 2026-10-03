@@ -34,12 +34,14 @@ ARCHITECTURE.md, раздел 6.5).
 
 Категории — в порядке появления в наборе, пропущенная пара категории и серии — 0, повторы
 складываются, строки без названия серии пропускаются. Порядок серий ``order``: ``name`` — по
-названию, ``data`` — по первому появлению, список названий — сначала они, потом остальные по
-названию. Новые серии получают свои цвета, лишние серии шаблона удаляются.
+названию (числа и даты — по возрастанию), ``data`` — по первому появлению, список названий —
+сначала они, потом остальные по названию. Новые серии получают свои цвета, лишние серии
+шаблона удаляются.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pptx.chart.data import CategoryChartData
@@ -106,6 +108,12 @@ class SeriesFrom(BaseModel):
         None, description="Формат Excel для данных и подписей всех серий; пусто — как у серий в шаблоне"
     )
     scale: Scale | None = Field(None, description="Разделить значения: thousand, million, billion")
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def _order_text(cls, v: Any) -> Any:
+        # Названия серий — текст, а годы и коды в YAML — числа: [2026] → ["2026"].
+        return [category_text(x, "") if isinstance(x, int | float) else x for x in v] if isinstance(v, list) else v
 
     @field_validator("scale", mode="before")
     @classmethod
@@ -191,13 +199,17 @@ def _check_series_from(chart: ChartInfo) -> None:
         raise BlockError(["у круговой диаграммы одна серия: series_from для неё не подходит, задайте series"])
 
 
-def _series_order(names: list[str], order: str | list[str]) -> list[str]:
-    """Порядок серий: ``name`` — по названию (по кодам символов, как сводная таблица pandas),
-    ``data`` — в порядке появления, список — сначала перечисленные названия, которые есть в
-    данных, потом остальные по названию."""
+def _series_order(names: dict[str, Any], order: str | list[str]) -> list[str]:
+    """Порядок серий; ``names`` — название серии → её значение в столбце. ``name`` — по значению,
+    как сводная таблица pandas: текст — по кодам символов, числа и даты — по возрастанию;
+    ``data`` — в порядке появления; список — сначала перечисленные названия, которые есть в
+    данных, потом остальные по значению."""
     if order == "data":
-        return names
-    by_name = sorted(names)
+        return list(names)
+    try:
+        by_name = sorted(names, key=names.__getitem__)
+    except TypeError:  # значения разных типов: по тексту названий
+        by_name = sorted(names)
     if order == "name":
         return by_name
     first = [n for n in dict.fromkeys(order) if n in names]
@@ -215,7 +227,7 @@ def _pivot(
     nums = [_number(v) for v in table.column(src.value).to_pylist()]
     sums: dict[tuple[str, str], float] = {}
     order: dict[str, None] = {}
-    names: dict[str, None] = {}
+    names: dict[str, Any] = {}
     skipped = 0
     for cat, r, v in zip(cats, raw, nums, strict=True):
         name = "" if r is None else category_text(r, params.category_format)
@@ -223,11 +235,12 @@ def _pivot(
             skipped += 1
             continue
         order.setdefault(cat)
-        names.setdefault(name)
-        sums[cat, name] = sums.get((cat, name), 0.0) + (v or 0.0)
+        names.setdefault(name, r)
+        if v is not None and not math.isnan(v):  # пустое значение и NaN — как в сводной pandas: 0
+            sums[cat, name] = sums.get((cat, name), 0.0) + v
     if not names:
         raise BlockError([f"в наборе «{params.dataset}» нет названий серий: столбец «{src.column}» пуст"])
-    ordered = _series_order(list(names), src.order)
+    ordered = _series_order(names, src.order)
     specs = [FillSeries(column=src.value, name=n, number_format=src.number_format, scale=src.scale) for n in ordered]
     values = [_scaled([sums.get((c, n), 0.0) for c in order], src.scale) for n in ordered]
     notes = [f"в наборе «{params.dataset}» пропущены строки без названия серии: {skipped}"] if skipped else []

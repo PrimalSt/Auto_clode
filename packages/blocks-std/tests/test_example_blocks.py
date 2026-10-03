@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
@@ -455,6 +456,30 @@ def test_series_from_order(order, names):
     t = shape_target(slide, info, 8)
     run(ChartFillBlock(), t, by_channel(order=order), BlockData(datasets={"r": REGS}))
     assert [s.name for s in t.shape.chart.plots[0].series] == names
+
+
+# Названия серий — числа и даты: как в сводной pandas, по возрастанию, а не по тексту; NaN — пустое
+# значение.
+YEARS = pa.table({"k": ["а"] * 4, "s": [2026, 10, 2, 2026], "v": [1.0, 2.0, float("nan"), 3.0]})
+MONTH_SERIES = pa.table({"k": ["а"] * 3, "s": [date(2026, 3, 1), date(2026, 1, 1), date(2026, 2, 1)], "v": [1.0] * 3})
+
+
+@pytest.mark.parametrize(
+    ("table", "options", "names", "values"),
+    [
+        (YEARS, {}, ["2", "10", "2026"], [[0], [2], [4]]),
+        (YEARS, {"order": [2026]}, ["2026", "2", "10"], [[4], [0], [2]]),
+        (MONTH_SERIES, {}, ["янв. 2026", "февр. 2026", "март 2026"], [[1], [1], [1]]),
+    ],
+)
+def test_series_from_numbers_and_dates_by_value(table, options, names, values):
+    _, slide, info = example(7)
+    t = shape_target(slide, info, 8)
+    params = {"dataset": "d", "categories": "k", "series_from": {"column": "s", "value": "v", **options}}
+    run(ChartFillBlock(), t, params, BlockData(datasets={"d": table}))
+    series = t.shape.chart.plots[0].series
+    assert [s.name for s in series] == names
+    assert [list(s.values) for s in series] == values
 
 
 def test_series_from_fewer_series_than_template():
