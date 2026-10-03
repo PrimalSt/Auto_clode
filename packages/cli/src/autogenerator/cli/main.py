@@ -1,8 +1,8 @@
 """Команда ``agen`` (ARCHITECTURE.md, раздел 6.7).
 
 CLI вызывает движок напрямую через фасад ``api`` и сам пишет метаданные папки данных,
-взяв её блокировку. Когда появится приложение (этап M4), при открытом приложении CLI
-будет работать через его сервер.
+взяв её блокировку. Когда появится сервер приложения (этап M4), при открытом приложении
+CLI будет работать через него.
 """
 
 from __future__ import annotations
@@ -16,10 +16,21 @@ from typing import Annotated
 import typer
 
 from autogenerator import api
-from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RaggedRows, RunResult
+from autogenerator.contracts import AgenError, IssueLevel, PreviewResult, RaggedRows
 
 from .data import history, source_app, upload_app
-from .output import LEVEL_MARK, RAGGED_HELP, fail, home_option, print_snapshot, read_options_from, utf8_output
+from .library import scenario_app, stored_scenario
+from .output import (
+    LEVEL_MARK,
+    RAGGED_HELP,
+    fail,
+    home_option,
+    print_result,
+    print_snapshot,
+    read_options_from,
+    utf8_output,
+)
+from .runs import backup_app, run_stored, runs_app
 from .theme import theme_app
 
 app = typer.Typer(
@@ -33,6 +44,9 @@ app = typer.Typer(
 app.add_typer(source_app, name="source")
 app.add_typer(upload_app, name="upload")
 app.add_typer(theme_app, name="theme")
+app.add_typer(scenario_app, name="scenario")
+app.add_typer(runs_app, name="runs")
+app.add_typer(backup_app, name="backup")
 app.command()(history)
 
 
@@ -50,30 +64,9 @@ def _parse_inputs(values: list[str]) -> dict[str, list[str]]:
     return out
 
 
-def _print_result(res: RunResult, verbose: bool) -> None:
-    if res.period is not None:
-        typer.echo(f"Отчётный период: {res.period.key}")
-    for inp, uploads in res.inputs.items():
-        parts = ", ".join(f"{Path(u['file']).name} ({u['period']}, {u['rows']} строк)" for u in uploads)
-        where = " (история из папки данных)" if inp in res.from_home else ""
-        typer.echo(f"Вход {inp}{where}: {parts}")
-    for n in res.nodes:
-        if verbose or n.state != "ok":
-            rows = f" {n.rows_in}→{n.rows_out} строк" if n.rows_in is not None else ""
-            typer.echo(f"  {n.state:<7} {n.id}{rows}{' — ' + n.message if n.message else ''}")
-    for i in res.issues:
-        if i.level == IssueLevel.INFO and not verbose:
-            continue
-        typer.echo(f"  {LEVEL_MARK[i.level]} {i}")
-    if res.output_path:
-        typer.echo(f"Готово: {res.output_path} ({_slides(res.slides)}, {res.seconds:.1f} с)")
-    if res.workdir:
-        typer.echo(f"Рабочая папка: {res.workdir}")
-
-
 @app.command()
 def run(
-    scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
+    scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml или id сценария из папки данных")],
     sources: Annotated[
         Path | None,
         typer.Option(help="Источники .yaml; по умолчанию sources.yaml рядом со сценарием"),
@@ -89,9 +82,14 @@ def run(
     theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx; по умолчанию theme из сценария")] = None,
     period: Annotated[
         str | None,
-        typer.Option(help="Отчётный период: 2026-03, 2026-Q1, 2026; по умолчанию — последний"),
+        typer.Option(
+            help="Отчётный период: 2026-03, 2026-Q1, 2026 или диапазон 2026-03-03..2026-03-19; по умолчанию — последний"
+        ),
     ] = None,
-    output: Annotated[Path | None, typer.Option("--output", "-o", help="Файл .pptx")] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Файл .pptx; у сохранённого сценария — файл или папка для копии отчёта"),
+    ] = None,
     output_dir: Annotated[Path | None, typer.Option(help="Папка для отчёта, если -o не задан")] = None,
     workdir: Annotated[
         Path | None,
@@ -108,7 +106,19 @@ def run(
 
     История входа — из файлов --input или --data; если их нет — из папки данных (agen upload add),
     когда там есть источник входа; иначе — из папки data рядом со сценарием.
+
+    Сохранённый сценарий (agen scenario add) запускается по id: история — из папки данных,
+    отчёт — в папке данных и копией в -o, запуск — в истории запусков (agen runs).
     """
+    if stored_scenario(home, scenario):
+        if sources or data or input or theme or output_dir or no_home:
+            raise typer.BadParameter(
+                "у сохранённого сценария источники, история и шаблон — из папки данных; "
+                "доступны --period, -o, --workdir, --accept-cast-errors",
+                param_hint="SCENARIO",
+            )
+        run_stored(home, str(scenario), period, output, accept_cast_errors, workdir, verbose)
+        return
     try:
         res = api.run(
             scenario,
@@ -127,7 +137,7 @@ def run(
     except AgenError as e:
         _fail(e)
         return
-    _print_result(res, verbose)
+    print_result(res, verbose)
     if not res.output_path:
         typer.echo("Отчёт не собран.", err=True)
         raise typer.Exit(1)
@@ -138,7 +148,7 @@ def run(
 
 @app.command()
 def validate(
-    scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml")],
+    scenario: Annotated[Path, typer.Argument(help="Сценарий .yaml или id сценария из папки данных")],
     sources: Annotated[Path | None, typer.Option(help="Источники .yaml")] = None,
     theme: Annotated[Path | None, typer.Option(help="Шаблон .pptx")] = None,
     no_home: Annotated[bool, typer.Option("--no-home", help="Не брать источники из папки данных")] = False,
@@ -146,6 +156,11 @@ def validate(
 ) -> None:
     """Проверить сценарий без данных: ссылки, плагины, параметры, макеты шаблона и
     слайды-образцы. Источники, которых нет в --sources, берутся из папки данных."""
+    if stored_scenario(home, scenario):
+        from .library import scenario_validate
+
+        scenario_validate(str(scenario), None, home)
+        return
     try:
         issues = api.validate(scenario, sources=sources, theme=theme, home=home, use_home=False if no_home else None)
     except AgenError as e:
@@ -158,14 +173,6 @@ def validate(
         typer.echo(f"Ошибок: {len(errors)}", err=True)
         raise typer.Exit(1)
     typer.echo("Сценарий в порядке.")
-
-
-def _slides(n: int) -> str:
-    if n % 10 == 1 and n % 100 != 11:
-        return f"{n} слайд"
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return f"{n} слайда"
-    return f"{n} слайдов"
 
 
 def _num(n: int | None, approx: bool) -> str:
@@ -358,7 +365,7 @@ def _preview_slide(
     except AgenError as e:
         _fail(e)
         return
-    _print_result(res, verbose=False)
+    print_result(res, verbose=False)
     if res.image_path:
         note = f" ({res.image_note})" if res.image_note else ""
         typer.echo(f"Картинка: {res.image_path}{note}")

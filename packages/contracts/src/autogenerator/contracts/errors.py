@@ -23,6 +23,7 @@ class ErrorCode(StrEnum):
     FILE_FORMAT = "file_format"
     FILE_ENCODING = "file_encoding"
     SCHEMA_BLOCKED = "schema_blocked"
+    SCHEMA_REVIEW = "schema_review"
     CAST_REVIEW = "cast_review"
     CANCELLED = "cancelled"
     # История и периоды
@@ -36,6 +37,7 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "not_found"
     ALREADY_EXISTS = "already_exists"
     SOURCE_CHANGE = "source_change"
+    IN_USE = "in_use"
     # Вычисления
     EXPRESSION = "expression"
     NODE_FAILED = "node_failed"

@@ -322,7 +322,8 @@ class MetricSpec(BaseModel):
             raise ValueError(f"{name}: нужна формула или пара {kind} + fn")
         if kind in ("formula", "sql", "python") and (self.fn or self.column or self.where):
             raise ValueError(f"{name}: fn, column и where задаются только вместе с input или dataset")
-        if kind in ("formula", "dataset") and "window" in self.model_fields_set:
+        # окно по умолчанию не мешает: так сценарий переживает сохранение целиком (model_dump)
+        if kind in ("formula", "dataset") and "window" in self.model_fields_set and self.window != WindowSpec():
             raise ValueError(f"{name}: окно задаётся у входа, а не у {'формулы' if kind == 'formula' else 'набора'}")
         if kind == "python" and not self.inputs:
             raise ValueError(f"{name}: перечислите входы и наборы, которые получает код (inputs)")

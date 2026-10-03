@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from autogenerator.contracts import (
     AgenError,
+    ColumnProfile,
     ColumnSnapshot,
     DType,
     ErrorCode,
@@ -71,17 +72,29 @@ def ingest_upload(
     issues: list[Issue] = []
     checked: list[tuple[Path, SchemaSnapshot, ReconcileResult]] = []
     for f in paths:
-        snap, rec = _check_file(f, source, options, set(req.required), registry)
+        snap, rec = check_file(
+            f, source, options, req.required, req.value_stats, req.dependents, registry, declined=req.declined
+        )
         name = f.name
         if rec.status == ReconcileStatus.BLOCKED:
             raise AgenError(
                 ErrorCode.SCHEMA_BLOCKED,
                 f"Файл {name} не подходит к источнику «{source.name}»:\n  " + "\n  ".join(rec.warnings + rec.messages),
-                details=rec.model_dump(),
+                details={"files": {name: rec.model_dump(mode="json")}},
             )
-        issues += [Issue(level=IssueLevel.WARNING, node=node, message=f"{name}: {m}") for m in rec.warnings]
-        issues += [Issue(level=IssueLevel.INFO, node=node, message=f"{name}: {m}") for m in rec.messages]
         checked.append((f, snap, rec))
+    review = {f.name: rec for f, _, rec in checked if rec.status == ReconcileStatus.NEEDS_REVIEW}
+    if review:
+        raise AgenError(
+            ErrorCode.SCHEMA_REVIEW,
+            mapping_question(source, review),
+            details={"files": {k: v.model_dump(mode="json") for k, v in review.items()}},
+            hint="Подтвердите сопоставление (agen upload add … --accept-mapping или --map «название в файле=id»): "
+            "подтверждённое название запомнится в источнике.",
+        )
+    for f, _, rec in checked:
+        issues += [Issue(level=IssueLevel.WARNING, node=node, message=f"{f.name}: {m}") for m in rec.warnings]
+        issues += [Issue(level=IssueLevel.INFO, node=node, message=f"{f.name}: {m}") for m in rec.messages]
     _, snap, rec = checked[0]
 
     by_upload = source.period_from == PeriodFrom.UPLOAD
@@ -105,7 +118,7 @@ def ingest_upload(
         upload_seq=req.upload_seq,
         out_dir=req.out_dir,
         options=snap.options,
-        required=set(req.required),
+        required=set(req.required or ()),
         progress=progress,
         cancelled=cancelled,
         more=[FilePart(f, r.mapping, sn.options) for f, sn, r in checked[1:]],
@@ -212,20 +225,63 @@ def _reader_for(path: Path, registry: PluginRegistry, fmt: str | None) -> Reader
     return choose_reader(path, registry, fmt)
 
 
-def _check_file(
-    path: Path, source: SourceSpec, options: ReadOptions, required: set[str], registry: PluginRegistry
+def check_file(
+    path: Path,
+    source: SourceSpec,
+    options: ReadOptions,
+    required: list[str] | None,
+    value_stats: dict[str, ColumnProfile] | None = None,
+    dependents: dict[str, list[str]] | None = None,
+    registry: PluginRegistry | None = None,
+    declined: list[str] | None = None,
 ) -> tuple[SchemaSnapshot, ReconcileResult]:
     """Снимок структуры файла и сверка с источником. Для Excel снимок — по шапке: выборка
-    прочитала бы лист целиком, а типы всё равно берутся из источника."""
+    прочитала бы лист целиком, а типы всё равно берутся из источника. У CSV снимок — по
+    выборке с профилем: по нему кандидатам для пропавших столбцов сравниваются типы и значения."""
     from autogenerator.ingest import header_snapshot, inspect_file
     from autogenerator.schema import reconcile
 
+    registry = _registry(registry)
     reader = _reader_for(path, registry, source.format)
     if reader.sample_reads_all:
         snap = header_snapshot(path, registry, options, source.format)
     else:
-        snap = inspect_file(path, registry, options, source.format, profile=False)
-    return snap, reconcile(source, snap, required)
+        snap = inspect_file(path, registry, options, source.format, profile=True)
+    return snap, reconcile(source, snap, required, value_stats, dependents, declined)
+
+
+def with_aliases(source: SourceSpec, pairs: dict[str, str]) -> SourceSpec:
+    """Источник, где подтверждённые названия файла (``название → id``) стали aliases (F-605)."""
+    from autogenerator.schema import with_aliases as _with
+
+    return _with(source, pairs)
+
+
+def normalize_name(name: str) -> str:
+    """Название столбца для сравнения: регистр, ё, пробелы и знаки препинания не важны."""
+    from autogenerator.schema import normalize_name as _norm
+
+    return _norm(name)
+
+
+def mapping_question(source: SourceSpec, review: dict[str, ReconcileResult]) -> str:
+    """Текст для подтверждения сопоставления: что, похоже, переименовано и из чего выбирать."""
+    lines: list[str] = []
+    for name, rec in review.items():
+        lines.append(f"Файл {name}: в источнике «{source.name}» не нашлись столбцы, но есть похожие")
+        chosen = {cid: f for f, cid in rec.proposed.items()}
+        for cid in rec.review or [*chosen, *rec.missing_required]:
+            cands = rec.candidates.get(cid, [])
+            if not cands:
+                continue
+            col = source.column(cid)
+            options = ", ".join(f"«{c.file_name}» ({round(c.score * 100)}%)" for c in cands)
+            head = f"  «{col.name}» (id {cid})"
+            if cid in chosen:
+                lines.append(f"{head} → «{chosen[cid]}»; варианты: {options}")
+            else:
+                lines.append(f"{head}: выберите из {options}")
+    return "\n".join(lines)
 
 
 def draft_source(

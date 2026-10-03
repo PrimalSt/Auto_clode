@@ -1,7 +1,7 @@
 """Публичный фасад Autogenerator для своего кода и Jupyter: ``load_scenario``, ``run``,
 ``preview``, ``preview_slide``, ``validate``, ``inspect``, ``modules``, шаблон оформления
 (``check_theme``, ``describe_theme``, ``scaffold_theme``) и папка данных ``Home`` (источники,
-загрузки, история)."""
+загрузки, история, сопоставление столбцов, сценарии, шаблоны, запуски, резервные копии)."""
 
 from .facade import (
     check_theme,
@@ -17,10 +17,18 @@ from .facade import (
     scaffold_theme,
     validate,
 )
-from .home import Home, UploadOutcome
+from .home import ChooseMapping, ColumnUsage, Home, MappingChoice, UploadOutcome
+from .library import SavedScenario, ThemeImport
+from .runs import BackupInfo
 
 __all__ = [
+    "BackupInfo",
+    "ChooseMapping",
+    "ColumnUsage",
     "Home",
+    "MappingChoice",
+    "SavedScenario",
+    "ThemeImport",
     "UploadOutcome",
     "check_theme",
     "describe_theme",

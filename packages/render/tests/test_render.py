@@ -133,3 +133,47 @@ def test_busy_file_is_saved_next_to_it(theme, registry, tmp_path: Path, monkeypa
 )
 def test_sanitize_filename(name, safe):
     assert sanitize_filename(name) == safe
+
+
+def _png() -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    raw = zlib.compress(b"\x00\xff\x00\x00")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", raw)
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_design_elements_are_copied_to_new_slides(theme, registry, tmp_path: Path):
+    import io
+
+    from pptx.util import Inches
+
+    from autogenerator.contracts import DesignElement, Geometry
+
+    prs = Presentation(theme.pptx_path)
+    cover = prs.slides[0]
+    pic = cover.shapes.add_picture(io.BytesIO(_png()), Inches(1), Inches(6), Inches(1), Inches(0.5))
+    pic.name = "Логотип"
+    sid = int(prs.slides._sldIdLst[0].get("id"))
+    path = tmp_path / "with_logo.pptx"
+    prs.save(str(path))
+    where = Geometry(x=int(Inches(2)), y=int(Inches(6.5)), cx=int(Inches(1)), cy=int(Inches(0.5)))
+    logo = DesignElement(name="Логотип", kind="picture", shape_id=pic.shape_id, from_slide=sid, geometry=where)
+    role = theme.roles[0].model_copy(update={"decorations": [logo]})
+    th = theme.model_copy(update={"pptx_path": str(path), "roles": [role]})
+    sc = scenario(slide({"type": "echo", "slot": "title", "text": "Итоги"}), slide({"type": "echo", "text": "x"}))
+    res = build_presentation(sc, th, EngineResult(period=MARCH, metrics={"rev": 1}), registry, tmp_path / "out.pptx")
+    assert res.output_path and res.slides == 2
+    out = Presentation(res.output_path)
+    for s in out.slides:  # слайд шаблона удалён, а картинка осталась на новых слайдах
+        pics = [sh for sh in s.shapes if sh.name == "Логотип"]
+        assert len(pics) == 1 and (pics[0].left, pics[0].top) == (where.x, where.y)
+        assert pics[0].image.blob == _png() and len({sh.shape_id for sh in s.shapes}) == len(s.shapes)

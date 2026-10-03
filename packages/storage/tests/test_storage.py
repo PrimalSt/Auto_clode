@@ -7,9 +7,17 @@ import pytest
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
+    HistoryManifest,
+    Issue,
     OverlapPolicy,
     Period,
+    RunRecord,
+    RunResult,
+    RunStatus,
+    ScenarioSpec,
     SourceSpec,
+    ThemeManifest,
+    ThemeVersionRecord,
     UploadRecord,
     UploadStatus,
 )
@@ -119,7 +127,7 @@ def test_uploads_round_trip_and_manifest(store: SqliteMetadataStore):
 
 def test_migrations_and_backup(folder: DataFolder):
     s = SqliteMetadataStore(folder.db_path, folder.backups)
-    assert s.schema_revision() == "0001"
+    assert s.schema_revision() == "0002"
     s.create_source(SPEC)
     s.close()
     # Повторное открытие той же версии схемы ничего не мигрирует и не копирует.
@@ -145,3 +153,102 @@ def test_blob_store(folder: DataFolder, tmp_path: Path):
     assert not Path(uri).exists()
     assert Path(blobs.tmp_uri()).parent == folder.tmp
     assert blobs.free_bytes() > 0
+
+
+def test_upgrade_from_m1_schema_makes_backup(folder: DataFolder):
+    from alembic import command
+    from sqlalchemy import create_engine
+
+    from autogenerator.storage.metadata import _alembic_config
+
+    engine = create_engine(f"sqlite:///{folder.db_path.as_posix()}")
+    with engine.connect() as conn:
+        command.upgrade(_alembic_config(conn), "0001")
+        conn.commit()
+    engine.dispose()
+    s = SqliteMetadataStore(folder.db_path, folder.backups)
+    assert s.schema_revision() == "0002"
+    assert [p.name.endswith("before-0002.sqlite") for p in folder.backups.iterdir()] == [True]
+    assert s.list_scenarios() == [] and s.list_themes() == [] and s.list_runs() == []
+    s.close()
+
+
+def scenario(name: str = "Продажи", source: str = "sales", **kw) -> ScenarioSpec:
+    return ScenarioSpec.model_validate({"name": name, "inputs": [{"id": "s", "source": source, "main": True}], **kw})
+
+
+def test_scenarios_and_versions(store: SqliteMetadataStore):
+    store.create_source(SPEC)
+    rec = store.save_scenario("sales_report", scenario(), text="name: Продажи\n", theme=("corp", 1))
+    assert (rec.version, rec.name, rec.current.theme_id, rec.current.theme_version) == (1, "Продажи", "corp", 1)
+    assert [(i.input_id, i.source_id, i.main) for i in rec.inputs] == [("s", "sales", True)]
+    # То же самое — без новой версии; другое — новой версией.
+    assert store.save_scenario("sales_report", scenario(), text="name: Продажи\n", theme=("corp", 1)).version == 1
+    assert store.save_scenario("sales_report", scenario(), text="name: Продажи\n", theme=("corp", 2)).version == 2
+    rec = store.save_scenario("sales_report", scenario("Продажи v3", source="plan"), comment="другой источник")
+    assert (rec.version, rec.name, rec.current.text, rec.current.comment) == (3, "Продажи v3", None, "другой источник")
+    assert [v.number for v in store.scenario_versions("sales_report")] == [1, 2, 3]
+    assert store.get_scenario_version("sales_report", 1).spec.inputs[0].source == "sales"
+    ref = store.scenarios_using_source("plan")[0]
+    assert (ref.scenario_id, ref.input_id) == ("sales_report", "s")
+    assert store.scenarios_using_source("sales") == []
+    with pytest.raises(AgenError) as e:
+        store.get_scenario("nope")
+    assert e.value.code == ErrorCode.NOT_FOUND
+    store.save_scenario("other", scenario(source="sales"))
+    with pytest.raises(AgenError) as e:
+        store.delete_source("sales")
+    assert e.value.code == ErrorCode.IN_USE and "other" in str(e.value)
+    store.delete_scenario("other")
+    store.delete_source("sales")
+    assert [s.id for s in store.list_scenarios()] == ["sales_report"]
+
+
+def manifest() -> ThemeManifest:
+    return ThemeManifest(
+        source_path="corp.pptx", pptx_path="", sha256="a" * 64, slide_width=100, slide_height=50, layouts=[], roles=[]
+    )
+
+
+def test_themes_and_versions(store: SqliteMetadataStore):
+    now = datetime(2026, 10, 3, 12, tzinfo=UTC)
+    v1 = ThemeVersionRecord(
+        theme_id="corp", number=1, pptx_uri="/t/1.pptx", sha256="a" * 64, original_name="Шаблон.pptx",
+        manifest=manifest(), imported_at=now,
+    )  # fmt: skip
+    rec = store.add_theme_version(v1, name="Корпоративный")
+    assert (rec.id, rec.name, rec.version, rec.current.original_name) == ("corp", "Корпоративный", 1, "Шаблон.pptx")
+    assert store.next_theme_version("corp") == 2
+    v2 = v1.model_copy(update={"number": 2, "roles": {"title": "2147483649"}, "comment": "роли"})
+    rec = store.add_theme_version(v2)
+    assert (rec.name, rec.version, rec.current.roles) == ("Корпоративный", 2, {"title": "2147483649"})
+    assert [v.number for v in store.theme_versions("corp")] == [1, 2]
+    assert store.get_theme_version("corp", 1).roles == {}
+    assert [v.number for v in store.find_theme_versions("a" * 64)] == [1, 2]
+    store.save_scenario("r", scenario(), theme=("corp", 2))
+    assert [s.id for s in store.scenarios_using_theme("corp")] == ["r"]
+    store.delete_theme("corp")
+    assert store.list_themes() == []
+
+
+def test_runs(store: SqliteMetadataStore):
+    store.save_scenario("r", scenario())
+    t = datetime(2026, 10, 3, 12, tzinfo=UTC)
+    assert store.next_run_seq("r") == 1
+    m = HistoryManifest.for_source(SPEC)
+    store.add_run(RunRecord(id="r-001", scenario_id="r", scenario_version=1, started_at=t, inputs_history={"s": m}))
+    store.add_run(RunRecord(id="r-002", scenario_id="r", scenario_version=1, started_at=t.replace(hour=13)))
+    assert store.next_run_seq("r") == 3
+    assert [r.id for r in store.list_runs()] == ["r-002", "r-001"]
+    assert [r.id for r in store.list_runs("r", limit=1)] == ["r-002"]
+    res = RunResult(ok=True, scenario="Продажи", slides=3, issues=[Issue(message="мало данных")])
+    rec = store.update_run(
+        "r-001", status=RunStatus.OK, result=res, period=Period.parse("2026-03"), output_uri="/o/a.pptx", finished_at=t
+    )
+    assert (rec.status, rec.result.slides, rec.period.key, rec.inputs_history["s"].source_id) == (
+        RunStatus.OK, 3, "2026-03", "sales",
+    )  # fmt: skip
+    assert store.interrupt_running() == ["r-002"]
+    assert store.get_run("r-002").status == RunStatus.INTERRUPTED
+    store.delete_scenario("r")
+    assert store.list_runs() == []
