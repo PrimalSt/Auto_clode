@@ -7,10 +7,12 @@
 Шапка ищется по первым строкам листа (над ней бывает заголовок отчёта), а листы
 выбираются так (F-104, F-111): если лист не указан, в выгрузку входят первый лист с
 данными и все следующие листы с такой же шапкой — так учётные системы разбивают выгрузки
-больше миллиона строк. Листы читаются по очереди, в памяти один лист. Перед чтением
-файл проверяется на zip-бомбу. Объединённые ячейки шапки — v1.
+больше миллиона строк. Листы читаются по очереди, в памяти один лист. Перед чтением .xlsx
+проверяется на zip-бомбу. Объединённые ячейки шапки — v1.
 
-Те же правила у .xls (``xls_reader.py``): там свои только методы доступа к книге.
+Тот же код читает и .xls: у читателя ``xls`` (``xls_reader.py``) свой только ``can_read``.
+Формат книги узнаётся по содержимому, а не по расширению и не по читателю: источник
+помнит читатель, а выгрузку могли пересохранить в другом формате.
 """
 
 from __future__ import annotations
@@ -58,23 +60,46 @@ class ExcelReader(ReaderPlugin):
         with zipfile.ZipFile(path) as z:
             return "xl/workbook.xml" in z.namelist()
 
-    # --- доступ к книге (у .xls — свой, xls_reader.py) ---------------------------------
+    # --- доступ к книге: .xlsx (zip) или .xls ---------------------------------------
+    # Первые строки .xlsx даёт потоковый разбор XML, .xls — сам fastexcel: XML в нём нет, а
+    # книга (не больше 65 536 строк на лист) всё равно целиком читается при открытии.
 
     def _check_file(self, path: Path) -> None:
-        check_zip(path)
+        if zipfile.is_zipfile(path):
+            check_zip(path)
 
     def _sheet_names(self, path: Path) -> list[str]:
-        return sheet_names(path)
+        if zipfile.is_zipfile(path):
+            return sheet_names(path)
+        try:
+            return self._open(path).sheet_names
+        except Exception as e:
+            raise AgenError(ErrorCode.FILE_FORMAT, f"Не удалось открыть книгу {path.name}: {e}") from e
 
     def _head_rows(self, path: Path, sheet: str, n_rows: int) -> list[list[str | None]]:
-        return head_rows(path, sheet, n_rows)
+        if zipfile.is_zipfile(path):
+            return head_rows(path, sheet, n_rows)
+        batch = self._read_sheet(path, sheet, n_rows)
+        return [list(row) for row in zip(*(c.to_pylist() for c in batch.columns), strict=True)]
 
     def _open(self, path: Path) -> fastexcel.ExcelReader:
         # fastexcel выбирает формат книги по расширению. Если оно чужое (.xlsx, сохранённый
         # как .xls, и наоборот), книга открывается из байтов: так формат узнаётся по содержимому.
-        if path.suffix.lower().lstrip(".") in self.formats:
+        if path.suffix.lower() in ((".xlsx", ".xlsm") if zipfile.is_zipfile(path) else (".xls",)):
             return fastexcel.read_excel(str(path))
         return fastexcel.read_excel(path.read_bytes())
+
+    def _read_sheet(self, path: Path, sheet: str, n_rows: int | None = None) -> pa.RecordBatch:
+        try:
+            # skip_rows=0: строки считаются от верха листа, как в шапке из _head_rows
+            # (иначе fastexcel пропускает пустые строки над данными и номер шапки сдвигается).
+            batch = self._open(path).load_sheet(
+                sheet, header_row=None, skip_rows=0, n_rows=n_rows, dtypes="string", eager=True
+            )
+        except Exception as e:
+            raise AgenError(ErrorCode.FILE_FORMAT, f"Не удалось прочитать лист «{sheet}» файла {path.name}: {e}") from e
+        assert isinstance(batch, pa.RecordBatch)
+        return batch
 
     # --- какие листы и где шапка --------------------------------------------------------
 
@@ -126,13 +151,7 @@ class ExcelReader(ReaderPlugin):
     # --- чтение -----------------------------------------------------------------------
 
     def _load(self, path: Path, sheet: str, header_row: int) -> tuple[list[str], pa.RecordBatch]:
-        try:
-            # skip_rows=0: строки считаются от верха листа, как в шапке из _head_rows
-            # (иначе fastexcel пропускает пустые строки над данными и номер шапки сдвигается).
-            batch = self._open(path).load_sheet(sheet, header_row=None, skip_rows=0, dtypes="string", eager=True)
-        except Exception as e:
-            raise AgenError(ErrorCode.FILE_FORMAT, f"Не удалось прочитать лист «{sheet}» файла {path.name}: {e}") from e
-        assert isinstance(batch, pa.RecordBatch)
+        batch = self._read_sheet(path, sheet)
         if batch.num_rows < header_row:
             return [], batch.slice(0, 0)
         head = [batch.column(i)[header_row - 1].as_py() for i in range(batch.num_columns)]

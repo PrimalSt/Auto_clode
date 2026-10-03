@@ -55,7 +55,7 @@ def test_xls_export_from_draft_to_upload(tmp_path: Path):
     """Excel 97–2003: над шапкой — параметры отчёта, выгрузка — на двух листах с одной шапкой."""
     xls = Path(__file__).resolve().parents[2] / "readers-std" / "tests" / "data" / "обращения.xls"
     spec, snap = draft_source(xls, "tickets")
-    assert (snap.format, snap.options.header_row, snap.sheets) == ("xls", 4, ["Часть 1", "Часть 2"])
+    assert (snap.format, snap.options.header_row, snap.sheets) == ("xls", 5, ["Часть 1", "Часть 2"])
     assert {c.name: c.dtype for c in spec.columns} == {
         "Номер": DType.STRING,
         "Тема": DType.STRING,

@@ -250,8 +250,9 @@ def test_excel_zip_bomb_is_rejected(tmp_path: Path, monkeypatch):
     with zipfile.ZipFile(f, "a") as z:
         z.writestr("xl/media/zeros.bin", b"\0" * 1_000_000, compress_type=zipfile.ZIP_DEFLATED)
     monkeypatch.setattr(xlsx_head, "ZIP_RATIO_MIN_BYTES", 100_000)
-    with pytest.raises(AgenError, match="zip-бомб"):
-        ExcelReader().sniff(f, ReadOptions())
+    for r in (ExcelReader(), XlsReader()):  # .xlsx проверяется, даже если источник — из .xls
+        with pytest.raises(AgenError, match="zip-бомб"):
+            r.sniff(f, ReadOptions())
 
 
 # --- Excel 97–2003 (.xls) -----------------------------------------------------------
@@ -262,7 +263,7 @@ def test_xls_finds_header_below_parameters_and_continuation_sheet():
     assert r.can_read(XLS)
     assert not ExcelReader().can_read(XLS) and not CsvReader().can_read(XLS)
     opts = r.sniff(XLS, ReadOptions())
-    assert (opts.header_row, opts.sheets) == (4, ["Часть 1", "Часть 2"])
+    assert (opts.header_row, opts.sheets) == (5, ["Часть 1", "Часть 2"])
     assert r.columns(XLS, ReadOptions()) == ["Номер", "Тема", "Ответов", "Часы", "Создано", "Закрыто"]
     batches = list(r.batches(XLS, opts, batch_rows=4))
     assert [b.num_rows for b in batches] == [4, 2, 4]  # порции — по листам
@@ -282,8 +283,9 @@ def test_xls_finds_header_below_parameters_and_continuation_sheet():
     s = r.sample(XLS, opts)
     assert (s.parts, s.rows_estimate) == (["начало"], 10)
     assert s.table.column("Создано").to_pylist()[-1] == "2026-01-31 00:00:00"
-    # Лист можно указать явно; строку заголовков — тоже, по счёту от верха листа.
-    only = r.sniff(XLS, ReadOptions(sheet="Часть 2", header_row=4))
+    # Лист можно указать явно; строку заголовков — тоже, по счёту от верха листа
+    # (с пустой строкой над параметрами отчёта).
+    only = r.sniff(XLS, ReadOptions(sheet="Часть 2", header_row=5))
     assert [x["Номер"] for x in _rows(r, XLS, only)] == ["1007", "1008", "1009", "1010"]
 
 
@@ -295,6 +297,13 @@ def test_excel_reads_book_whatever_its_extension(tmp_path: Path):
     new = _xlsx(tmp_path / "план.xls", {"План": [["Регион", "План"], ["Москва", 1000.5]]})
     assert ExcelReader().can_read(new) and not XlsReader().can_read(new)
     assert _rows(ExcelReader(), new) == [{"Регион": "Москва", "План": "1000.5"}]
+    # Источник помнит читатель, а выгрузку пересохранили в другом формате: книгу читает
+    # и «чужой» читатель, как бы ни назывался файл.
+    for f in (XLS, old):
+        assert len(_rows(ExcelReader(), f)) == 10
+    for f in (new, _xlsx(tmp_path / "план.xlsx", {"План": [["Регион", "План"], ["Москва", 1000.5]]})):
+        assert XlsReader().columns(f, ReadOptions()) == ["Регион", "План"]
+        assert _rows(XlsReader(), f) == [{"Регион": "Москва", "План": "1000.5"}]
 
 
 def test_xls_reader_skips_other_office_documents(tmp_path: Path):
