@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -104,28 +105,28 @@ def uploads_in(manifest: HistoryManifest, span: DateSpan) -> list[UploadRef]:
                 rules[up.id] = OverlapPolicy.APPEND  # правило не выбрано: об этом скажет чтение истории
         last_full = max((i for i, up in enumerate(active) if rules[up.id] == OverlapPolicy.REPLACE_ALL), default=0)
         active = active[last_full:]
+    # От новых к старым: ``replaced`` — объединённые периоды более поздних загрузок с
+    # ``replace_period``; загрузка читается, если её часть в отрезке ими не закрыта целиком.
     out: list[UploadRef] = []
-    for i, up in enumerate(active):
+    replaced: list[tuple[date, date]] = []
+    for up in reversed(active):
         start = up.period.start if span.start is None else max(up.period.start, span.start)
         end = min(up.period.end_exclusive, span.end_exclusive)
-        rest = [(start, end)] if start < end else []
-        for later in active[i + 1 :]:
-            if rest and rules.get(later.id) == OverlapPolicy.REPLACE_PERIOD:
-                rest = _cut(rest, later.period)
-        if rest:
+        i = bisect_right(replaced, start, key=lambda r: r[0]) - 1
+        if start < end and not (i >= 0 and replaced[i][1] >= end):
             out.append(up)
-    return out
+        if rules.get(up.id) == OverlapPolicy.REPLACE_PERIOD:
+            _add(replaced, up.period.start, up.period.end_exclusive)
+    return out[::-1]
 
 
-def _cut(parts: list[tuple[date, date]], p: Period) -> list[tuple[date, date]]:
-    """Отрезки ``[начало, конец)`` без дат периода ``p``."""
-    out = []
-    for s, e in parts:
-        if s < p.start:
-            out.append((s, min(e, p.start)))
-        if e > p.end_exclusive:
-            out.append((max(s, p.end_exclusive), e))
-    return out
+def _add(spans: list[tuple[date, date]], start: date, end: date) -> None:
+    """Добавить отрезок ``[start, end)`` к объединённым отрезкам ``spans`` (по возрастанию)."""
+    lo = bisect_left(spans, start, key=lambda r: r[1])
+    hi = bisect_right(spans, end, key=lambda r: r[0])
+    if lo < hi:
+        start, end = min(start, spans[lo][0]), max(end, spans[hi - 1][1])
+    spans[lo:hi] = [(start, end)]
 
 
 # --- Действующая история ----------------------------------------------------------------

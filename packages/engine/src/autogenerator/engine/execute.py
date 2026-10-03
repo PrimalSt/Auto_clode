@@ -234,15 +234,24 @@ class _Engine:
             self.warn(node, f"{what}: нет загрузок входа «{input_id}» за {missing}")
 
     def read_spans(self, ip: InputPlan, node: str, lower: date | None) -> list[DateSpan]:
-        """Какие отрезки истории входа читает узел: окна за все его периоды, а шаги —
-        всё прочитанное, от нижней границы до конца отчётного периода."""
+        """Какие отрезки истории входа нужны узлу: окна набора или показателя за все его
+        периоды. Шагам — окна узлов, которые зависят от входа, отодвинутые назад на глубину
+        шагов (``lookback``); если нижней границы чтения нет (``lower``), — всё до конца
+        отчётного периода."""
         base = node.split("/", 1)[0]
         if not self.wanted(base):
             return []
         kind, nid = base.split(":", 1)
         end = self.period.end_exclusive
         if kind == "input":
-            return [DateSpan(start=lower, end_exclusive=end)]
+            if lower is None:
+                return [DateSpan(start=None, end_exclusive=end)]
+            # Строки между окнами шаги обрабатывают, но в отчёт они не попадают.
+            return [
+                DateSpan(start=self.back_off(ip, s.start), end_exclusive=s.end_exclusive) if s.start else s
+                for n in self.plan.input_dependents(nid)
+                for s in self.read_spans(ip, n, lower)
+            ]
         owner = self.plan.datasets.get(nid) if kind == "dataset" else self.plan.metrics.get(nid)
         if owner is None or owner.window is None:
             return []
@@ -264,6 +273,7 @@ class _Engine:
             return
         iid = ip.spec.id
         lower = self.lower_bound(ip)
+        spans: dict[str, list[DateSpan]] = {}
         read: dict[DateSpan, list[UploadRef]] = {}
         found: dict[str, UploadRef] = {}
         missing: dict[str, dict[str, list[str]]] = {}
@@ -271,7 +281,9 @@ class _Engine:
             if col == ip.schema.period_column or col in SERVICE_COLUMNS:
                 continue
             for node in nodes:
-                for span in self.read_spans(ip, node, lower):
+                if node not in spans:
+                    spans[node] = self.read_spans(ip, node, lower)
+                for span in spans[node]:
                     if span not in read:
                         try:
                             read[span] = list(uploads(iid, span))
@@ -298,7 +310,7 @@ class _Engine:
             self.warn(
                 f"input:{iid}",
                 f"в загрузке #{up.seq} «{up.original_name}» ({up.period.key}) нет {what}. "
-                f"Если {fix} в aliases источника «{ip.spec.source}» и загрузите файл заново",
+                f"Если {fix} в aliases источника «{ip.spec.source}» и загрузите файл заново вместо этой загрузки",
             )
 
     # --- границы и ключи кэша --------------------------------------------------------
@@ -324,8 +336,7 @@ class _Engine:
         iid = ip.spec.id
         if any(iid in other.deps for other in self.plan.inputs.values()):
             return None  # вход нужен шагам другого входа целиком
-        lookback = ip.lookback
-        if lookback is None:
+        if ip.lookback is None:
             return None
         starts: list[date] = []
         for n in self.plan.input_dependents(iid):
@@ -343,11 +354,15 @@ class _Engine:
                 starts.append(span.start)
         if not starts:
             return None
-        lower = min(starts)
-        if lookback:
-            unit = ip.schema.period_unit if ip.schema.period_unit in CALENDAR_UNITS else PeriodUnit.MONTH
-            lower = unit_shift(unit_start(lower, unit), unit, -lookback)
-        return lower
+        return self.back_off(ip, min(starts))
+
+    def back_off(self, ip: InputPlan, start: date) -> date:
+        """Начало окна, отодвинутое назад на глубину шагов входа (``lookback``)."""
+        lookback = ip.lookback
+        if not lookback:
+            return start
+        unit = ip.schema.period_unit if ip.schema.period_unit in CALENDAR_UNITS else PeriodUnit.MONTH
+        return unit_shift(unit_start(start, unit), unit, -lookback)
 
     def fingerprint(self, input_id: str) -> str | None:
         fn = getattr(self.history, "fingerprint", None)

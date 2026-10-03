@@ -168,7 +168,7 @@ def test_column_missing_in_upload(registry, history, tmp_path):
     assert warnings[0].message == (
         "в загрузке #2 «мар.csv» (2026-03) нет столбца «Регион» (region) — в ней он пустой, а сценарий его "
         "использует (dataset:d, metric:rev). Если столбец переименован: добавьте новое название в aliases "
-        "источника «s» и загрузите файл заново"
+        "источника «s» и загрузите файл заново вместо этой загрузки"
     )
     # Все пропавшие столбцы загрузки — в одном предупреждении, в порядке столбцов источника.
     history._uploads["sales"][1].file_columns = ["date"]
@@ -195,6 +195,17 @@ def test_column_missing_in_upload_for_steps(registry, history, tmp_path):
     [w] = column_warnings(run(sc, registry, history, tmp_path))
     assert "«Регион» (region)" in w and "(input:sales/step:dd)" in w
     assert column_warnings(run(sc, registry, history, tmp_path, period=Period.parse("2026-02"))) == []
+    # Построчному шагу нужны только строки в окнах: март лежит между окнами за апрель и за апрель
+    # прошлого года и в отчёт не попадает. Удалению дубликатов с глубиной 1 нужен и март.
+    april = Period.parse("2026-04")
+    keep_a = {"id": "f", "type": "filter", "where": "region = 'A'"}
+    n = {"id": "n", "input": "sales", "fn": "count"}
+    ly = {"id": "ly", "input": "sales", "window": "same_period_last_year", "fn": "count"}
+    sc = scenario(inputs=[{"id": "sales", "source": "s", "pipeline": [keep_a]}], metrics=[n, ly])
+    assert column_warnings(run(sc, registry, history, tmp_path, period=april)) == []
+    sc = scenario(inputs=[{"id": "sales", "source": "s", "pipeline": [{**dedupe, "depth": 1}]}], metrics=[n])
+    [w] = column_warnings(run(sc, registry, history, tmp_path, period=april))
+    assert w.startswith("в загрузке #2 «мар.csv» (2026-03) нет столбца «Регион» (region)")
     # Формула с id столбца источника заменяет его: дальше это результат шага, столбец файла не нужен.
     formula = {"id": "f", "type": "formula", "column": "region", "expr": "'все'"}
     sc = scenario(inputs=[{"id": "sales", "source": "s", "pipeline": [formula]}], datasets=[BY_REGION])
