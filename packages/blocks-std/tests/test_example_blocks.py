@@ -477,6 +477,168 @@ def test_number_nbsp_in_table_cells():
     assert shape.table.cell(1, 1).text == f"1{NBSP}234{NBSP}567"
 
 
+def fill_table(params: dict, data: pa.Table, prepare=None):
+    """Таблица слайда 6 синтетического шаблона после table_fill; ``prepare`` правит слайд до сборки."""
+    _, slide, info = example(6)
+    shape = table_shape(slide)
+    if prepare:
+        prepare(slide, shape)
+    ctx = run(TableFillBlock(), shape_target(slide, info, shape.shape_id), params, BlockData(datasets={"t": data}))
+    return shape, ctx
+
+
+def fills(shape, column: int) -> list[str | None]:
+    """Цвета заливки ячеек столбца в строках данных; ``None`` — своей заливки нет."""
+    out = []
+    for tr in list(shape.table._tbl.tr_lst)[1:]:
+        clr = tr.findall(f"{A}tc")[column].find(f"{A}tcPr/{A}solidFill/{A}srgbClr")
+        out.append(clr.get("val") if clr is not None else None)
+    return out
+
+
+def test_table_fill_cell_colors_from_column():
+    data = pa.table({"k": ["а", "б", "в", "г"], "v": [1.0, 2, 3, 4], "color": ["ff0000", None, "", "#00FF00"]})
+    params = {"dataset": "t", "columns": [{"column": "k", "fill": "color"}], "other_columns": True}
+    shape, _ = fill_table(params, data)
+    assert [c.text for c in shape.table.rows[0].cells] == ["k", "v"]  # столбец цвета не выводится
+    assert fills(shape, 0) == ["FF0000", None, None, "00FF00"]
+    assert fills(shape, 1) == [None] * 4
+    with pytest.raises(BlockError, match="не цвет RRGGBB: «red»"):
+        fill_table(params, data.set_column(2, "color", pa.array(["red", None, None, None])))
+    with pytest.raises(BlockError, match="нет столбцов nope"):
+        fill_table({"dataset": "t", "columns": [{"column": "k", "fill": "nope"}]}, data)
+
+
+def test_table_fill_heatmap_colors():
+    # Шкала 0…100: красный — жёлтый — зелёный, каналы между цветами — с отбрасыванием дробной части.
+    ages = ["0%", "50.0%", "100%", f"25,0{NBSP}%", "-", None, "150", "-10"]
+    data = pa.table({"cohort": [f"к{i}" for i in range(len(ages))], "age_1": ages})
+    params = {"dataset": "t", "heatmap": {"columns": ["age_1"], "min": 0, "max": 100}}
+    shape, _ = fill_table(params, data)
+    assert fills(shape, 1) == ["F8696B", "FFEB84", "63BE7B", "FBAA77", None, None, "63BE7B", "F8696B"]
+    assert fills(shape, 0) == [None] * len(ages)
+    assert shape.table.cell(2, 1).text == "50.0%"  # текст ячейки не меняется
+
+
+def test_table_fill_heatmap_auto_range_and_explicit_fill_wins():
+    data = pa.table(
+        {
+            "k": ["а", "б", "в"],
+            "a1": [20, 30, None],
+            "a2": [40, 25, 30],
+            "color": ["0000FF", None, None],
+        }
+    )
+    params = {
+        "dataset": "t",
+        "columns": ["k", {"column": "a1", "fill": "color"}, "a2"],
+        "heatmap": {"columns": ["a1", "a2"]},
+    }
+    shape, _ = fill_table(params, data)
+    # Наименьшее (20) и наибольшее (40) — по обоим столбцам карты.
+    assert fills(shape, 1) == ["0000FF", "FFEB84", None]
+    assert fills(shape, 2) == ["63BE7B", "FBAA77", "FFEB84"]
+    with pytest.raises(BlockError, match="heatmap: столбцов color нет в таблице"):
+        fill_table({**params, "heatmap": {"columns": ["color"]}}, data)
+    with pytest.raises(ValueError, match="min должен быть меньше max"):
+        TableFillBlock().parse_params({**params, "heatmap": {"columns": ["a1"], "min": 1, "max": 1}})
+
+
+def test_table_fill_fill_keeps_schema_order():
+    from lxml import etree
+
+    border = f'<a:lnB xmlns:a="{A[1:-1]}" w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:lnB>'
+
+    def prepare(slide, shape):
+        trs = list(shape.table._tbl.tr_lst)
+        pr = trs[1].findall(f"{A}tc")[0].find(f"{A}tcPr")
+        for tag in ("lnL", "lnR"):
+            etree.SubElement(pr, f"{A}{tag}", w="6350")
+        pr.append(etree.fromstring(border))
+        etree.SubElement(pr, f"{A}noFill")
+        etree.SubElement(pr, f"{A}extLst")
+        tc = trs[2].findall(f"{A}tc")[0]
+        tc.remove(tc.find(f"{A}tcPr"))  # у ячейки нет tcPr
+
+    colors = ["AA0000", "00AA00", "0000AA", "AAAA00", "00AAAA"]
+    data = pa.table({"k": list("абвгд"), "color": colors})
+    shape, _ = fill_table({"dataset": "t", "columns": [{"column": "k", "fill": "color"}]}, data, prepare)
+    trs = list(shape.table._tbl.tr_lst)
+    for tr in (trs[1], trs[5]):  # строка шаблона и новая, скопированная с неё
+        pr = tr.findall(f"{A}tc")[0].find(f"{A}tcPr")
+        assert [etree.QName(el).localname for el in pr] == ["lnL", "lnR", "lnB", "solidFill", "extLst"]
+        assert pr.find(f"{A}lnB/{A}solidFill/{A}srgbClr").get("val") == "000000"  # граница не тронута
+    tc = trs[2].findall(f"{A}tc")[0]
+    assert [etree.QName(el).localname for el in tc] == ["txBody", "tcPr"]
+    assert fills(shape, 0) == colors
+
+
+def test_table_fill_colors_follow_trimmed_rows():
+    n = 80
+    data = pa.table({"k": [f"строка {i}" for i in range(n)], "color": [f"{i:06X}" for i in range(n)]})
+    params = {"dataset": "t", "columns": [{"column": "k", "fill": "color"}], "min_font_size": 9}
+    shape, ctx = fill_table(params, data)
+    shown = len(shape.table.rows) - 1
+    assert shown < n and any("показаны последние" in w for w in ctx.warnings)
+    assert shape.table.cell(1, 0).text == f"строка {n - shown}"
+    assert fills(shape, 0) == [f"{i:06X}" for i in range(n - shown, n)]
+
+
+def test_table_fill_inherited_font_size():
+    from autogenerator.contracts.ooxml import P
+
+    def sizes(prepare) -> set[str]:
+        shape, _ = fill_table({"dataset": "t"}, pa.table({"k": ["а"], "v": [1.0]}), prepare)
+        return {r.get("sz") for r in shape.table._tbl.iter(f"{A}rPr")}
+
+    def master_style(slide):
+        master = slide.slide_layout.slide_master._element
+        return master.find(f"{P}txStyles/{P}otherStyle/{A}lvl1pPr/{A}defRPr")
+
+    def default_style(slide):
+        pres = slide.part.package.presentation_part._element
+        return pres.find(f"{P}defaultTextStyle/{A}lvl1pPr/{A}defRPr")
+
+    def master_14(slide, shape):
+        master_style(slide).set("sz", "1400")
+
+    def presentation_16(slide, shape):
+        master_style(slide).attrib.pop("sz")
+        default_style(slide).set("sz", "1600")
+
+    def nothing(slide, shape):
+        master_style(slide).attrib.pop("sz")
+        default_style(slide).attrib.pop("sz")
+
+    assert sizes(master_14) == {"1400"}
+    assert sizes(presentation_16) == {"1600"}
+    assert sizes(nothing) == {"1800"}
+
+
+def test_table_fill_keeps_template_row_heights():
+    template_h = 438912  # высота строк таблицы синтетического шаблона
+
+    def taller(slide, shape):
+        trs = list(shape.table._tbl.tr_lst)
+        trs[1].set("h", "500000")  # строка, с которой копируются новые
+        trs[2].set("h", "600000")
+
+    data = pa.table({"k": [f"строка {i}" for i in range(6)]})
+    shape, _ = fill_table({"dataset": "t"}, data, taller)
+    heights = [r.height for r in shape.table.rows]
+    assert heights == [template_h, 500000, 600000, template_h, template_h, 500000, 500000]
+    assert shape.height == sum(heights)
+
+    # Высоты шаблона не помещаются до bottom, высоты по тексту — помещаются: кегль не уменьшается.
+    four = pa.table({"k": [f"строка {i}" for i in range(4)]})
+    top = Inches(1.5)
+    bottom = (top + 5 * template_h - 100_000) / 914400
+    shape, ctx = fill_table({"dataset": "t", "bottom": bottom}, four)
+    assert all(r.height < template_h for r in shape.table.rows)
+    assert {r.get("sz") for r in shape.table._tbl.iter(f"{A}rPr")} == {"1800"}
+    assert not ctx.warnings
+
+
 def test_series_labels_get_scenario_format():
     from lxml import etree
 
