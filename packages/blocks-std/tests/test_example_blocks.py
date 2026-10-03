@@ -12,6 +12,7 @@ from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
 from autogenerator.blocks_std.chart_fill import ChartFillBlock
+from autogenerator.blocks_std.chart_xml import check_chart, series_color, theme_colors
 from autogenerator.blocks_std.formats import NBSP
 from autogenerator.blocks_std.markers import MarkersBlock
 from autogenerator.blocks_std.table_fill import TableFillBlock
@@ -392,6 +393,107 @@ def test_overlaid_charts_need_same_categories():
     run(block, t6, p6, data)
     with pytest.raises(BlockError, match="наложены"):
         block.finish_slide(slide, [(t5, block.parse_params(p5)), (t6, block.parse_params(p6))], Ctx())
+
+
+# --- серии из данных ----------------------------------------------------------------------
+
+# Регистрации по каналам: строка на месяц и канал. В феврале и марте нет «Партнёров», «Сайт» в
+# марте — двумя строками, одна строка без канала.
+REGS = pa.table(
+    {
+        "month": ["янв", "янв", "янв", "фев", "фев", "мар", "мар", "мар", "мар"],
+        "channel": ["Сайт", "Партнёры", "Офис", "Сайт", "Офис", "Офис", "Сайт", None, "Сайт"],
+        "regs": [10.0, 4.0, 2.0, 12.0, 3.0, 5.0, 7.0, 100.0, 6.0],
+    }
+)
+
+
+def by_channel(**options) -> dict:
+    return {"dataset": "r", "categories": "month", "series_from": {"column": "channel", "value": "regs", **options}}
+
+
+def test_series_from_adds_series_with_own_colors():
+    _, slide, info = example(7)  # столбцы, одна серия без своего цвета
+    block = ChartFillBlock()
+    params = by_channel()
+    assert block.check(block.parse_params(params), info, 8) == []
+    t = shape_target(slide, info, 8)
+    data = BlockData(datasets={"r": REGS})
+    ctx = run(block, t, params, data)
+    plot = t.shape.chart.plots[0]
+    assert list(plot.categories) == ["янв", "фев", "мар"]  # в порядке появления
+    assert [s.name for s in plot.series] == ["Офис", "Партнёры", "Сайт"]
+    # Пропущенная пара — 0, повторы складываются, строка без канала пропущена.
+    assert [list(s.values) for s in plot.series] == [[2, 3, 5], [4, 0, 0], [10, 12, 13]]
+    cs = chart_xml(slide, 8)
+    assert check_chart(cs, 3) == []
+    theme = theme_colors(slide)
+    colors = [series_color(s, theme) for s in cs.iter(f"{C}ser")]
+    assert colors[0] is None  # серия шаблона окрашена автоматически: accent1
+    assert len({theme["accent1"], *colors[1:]}) == 3
+    assert any("без названия серии: 1" in w for w in ctx.warnings)
+    assert any("в графике шаблона 1: новые серии" in w for w in ctx.warnings)
+    preview = block.preview(t, block.parse_params(params), data, Ctx())
+    assert preview is not None
+    assert [(s["name"], s["data"]) for s in preview.option["series"]] == [
+        ("Офис", [2, 3, 5]),
+        ("Партнёры", [4, 0, 0]),
+        ("Сайт", [10, 12, 13]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("order", "names"),
+    [
+        ("name", ["Офис", "Партнёры", "Сайт"]),
+        ("data", ["Сайт", "Партнёры", "Офис"]),
+        (["Сайт", "Нет такого"], ["Сайт", "Офис", "Партнёры"]),
+    ],
+)
+def test_series_from_order(order, names):
+    _, slide, info = example(7)
+    t = shape_target(slide, info, 8)
+    run(ChartFillBlock(), t, by_channel(order=order), BlockData(datasets={"r": REGS}))
+    assert [s.name for s in t.shape.chart.plots[0].series] == names
+
+
+def test_series_from_fewer_series_than_template():
+    _, slide, info = example(5)  # столбцы с накоплением, две серии
+    one = pa.table({"k": ["1", "2", "3"], "ch": ["Сайт"] * 3, "v": [1500.0, 2500.0, 3500.0]})
+    params = {
+        "dataset": "d",
+        "categories": "k",
+        "series_from": {"column": "ch", "value": "v", "scale": "тыс.", "number_format": "0.0"},
+    }
+    t = shape_target(slide, info, 5)
+    ctx = run(ChartFillBlock(), t, params, BlockData(datasets={"d": one}))
+    cs = chart_xml(slide, 5)
+    assert series_by_group(cs) == [1]
+    assert check_chart(cs, 3) == []
+    series = t.shape.chart.plots[0].series[0]
+    assert series.name == "Сайт" and list(series.values) == [1.5, 2.5, 3.5]
+    assert cs.find(f".//{C}barChart/{C}dLbls/{C}numFmt").get("formatCode") == "0.0"
+    assert any("лишние серии шаблона удалены" in w for w in ctx.warnings)
+
+
+def test_series_from_needs_one_group_not_pie():
+    block = ChartFillBlock()
+    params = block.parse_params(by_channel())
+    data = BlockData(datasets={"r": REGS})
+    _, slide, info = example(2)  # столбцы и линия
+    assert "одной группой серий" in block.check(params, info, 6)[0]
+    with pytest.raises(BlockError, match="одной группой серий"):
+        block.render(shape_target(slide, info, 6), params, data, Ctx())
+    _, slide, info = example(3)  # круговая
+    assert "круговой" in block.check(params, info, 4)[0]
+    with pytest.raises(BlockError, match="круговой"):
+        block.render(shape_target(slide, info, 4), params, data, Ctx())
+    with pytest.raises(ValueError, match="ровно один источник серий"):
+        block.parse_params({**by_channel(), "series": ["regs"]})
+    with pytest.raises(ValueError, match="ровно один источник серий"):
+        block.parse_params({"dataset": "r", "categories": "month"})
+    with pytest.raises(ValueError, match="groups не задаётся"):
+        block.parse_params({**by_channel(), "groups": [3]})
 
 
 # --- таблица ------------------------------------------------------------------------------

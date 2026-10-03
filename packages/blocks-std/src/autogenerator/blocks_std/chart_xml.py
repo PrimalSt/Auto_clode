@@ -115,6 +115,11 @@ def series_color(ser: Any, theme: dict[str, str]) -> str | None:
     return None
 
 
+def _auto_color(ser: Any, theme: dict[str, str]) -> str | None:
+    """Цвет серии без своей заливки: в стиле по умолчанию PowerPoint берёт accent1…6 по ``c:idx``."""
+    return theme.get(f"accent{int(val(ser, 'idx', '0')) % 6 + 1}")
+
+
 def _distance(a: str, b: str) -> float:
     pa = [int(a[i : i + 2], 16) for i in (0, 2, 4)]
     pb = [int(b[i : i + 2], 16) for i in (0, 2, 4)]
@@ -198,7 +203,8 @@ def set_series_counts(cs: Any, counts: list[int], theme: dict[str, str]) -> None
     all_sers = list(plot_area(cs).iter(f"{C}ser"))
     next_idx = max([int(val(s, "idx", "0")) for s in all_sers] + [-1]) + 1
     next_order = max([int(val(s, "order", "0")) for s in all_sers] + [-1]) + 1
-    used = [c for c in (series_color(s, theme) for s in all_sers) if c]
+    # Цвет серии без своей заливки тоже занят: иначе новая серия может получить его же.
+    used = [c for c in (series_color(s, theme) or _auto_color(s, theme) for s in all_sers) if c]
     for g, want in zip(gs, counts, strict=True):
         if want < 1:
             raise ValueError("у группы серий графика должна остаться хотя бы одна серия")

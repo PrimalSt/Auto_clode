@@ -21,6 +21,21 @@ ARCHITECTURE.md, раздел 6.5).
 каждой группе, например ``[3, 1]``). Число категорий может меняться, кроме графиков, рядом с
 которыми надписи расставлены под каждую категорию. Круговая диаграмма получает не больше
 секторов, чем в шаблоне: остальные собираются в последний сектор «Прочие».
+
+Серии из данных (``series_from`` вместо ``series``) — для графика с одной группой серий, не
+круговой. Набор «длинный»: строка на категорию и серию; серий столько, сколько разных названий
+в столбце ``column``, как в сводной таблице::
+
+    - type: chart_fill
+      shape: 6
+      dataset: regs_by_channel      # строки: месяц, канал, число регистраций
+      categories: month
+      series_from: {column: channel, value: regs, order: name}
+
+Категории — в порядке появления в наборе, пропущенная пара категории и серии — 0, повторы
+складываются, строки без названия серии пропускаются. Порядок серий ``order``: ``name`` — по
+названию, ``data`` — по первому появлению, список названий — сначала они, потом остальные по
+названию. Новые серии получают свои цвета, лишние серии шаблона удаляются.
 """
 
 from __future__ import annotations
@@ -46,7 +61,7 @@ from autogenerator.contracts import (
 
 from .chart import category_text
 from .chart_xml import check_chart, cleanup_points, set_label_formats, set_series_counts, theme_colors
-from .formats import Scale
+from .formats import SCALES, Scale
 from .label_bands import fix_slide_labels
 from .values import SCALE_ALIASES
 
@@ -75,12 +90,36 @@ class FillSeries(BaseModel):
         return SCALE_ALIASES.get(v.strip().lower(), v) if isinstance(v, str) else v
 
 
+class SeriesFrom(BaseModel):
+    """Серии из данных: по одной на каждое название в столбце ``column``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(description="Столбец набора с названиями серий")
+    value: str = Field(description="Столбец набора со значениями")
+    order: Literal["name", "data"] | list[str] = Field(
+        "name",
+        description="Порядок серий: name — по названию, data — по первому появлению в наборе, список названий — "
+        "сначала они, потом остальные по названию",
+    )
+    number_format: str | None = Field(
+        None, description="Формат Excel для данных и подписей всех серий; пусто — как у серий в шаблоне"
+    )
+    scale: Scale | None = Field(None, description="Разделить значения: thousand, million, billion")
+
+    @field_validator("scale", mode="before")
+    @classmethod
+    def _scale_alias(cls, v: Any) -> Any:
+        return SCALE_ALIASES.get(v.strip().lower(), v) if isinstance(v, str) else v
+
+
 class ChartFillParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset: str
     categories: str = Field(description="Столбец набора с категориями")
-    series: list[FillSeries] = Field(min_length=1)
+    series: list[FillSeries] | None = Field(None, min_length=1, description="Серии по столбцам набора")
+    series_from: SeriesFrom | None = Field(None, description="Серии из данных вместо series")
     groups: list[int] | None = Field(None, description="Сколько серий в каждой группе графика, например [3, 1]")
     category_format: str = Field("LLL yyyy", description="Формат дат в категориях (Babel): «янв. 2026»")
     expected_categories: list[str] | None = Field(
@@ -92,6 +131,14 @@ class ChartFillParams(BaseModel):
         "auto", description="auto — развести подписи линии и столбцов на комбинированных графиках"
     )
 
+    @model_validator(mode="after")
+    def _check(self) -> ChartFillParams:
+        if (self.series is None) == (self.series_from is None):
+            raise ValueError("у chart_fill должен быть ровно один источник серий: series или series_from")
+        if self.series_from is not None and self.groups is not None:
+            raise ValueError("groups не задаётся вместе с series_from: число серий берётся из данных")
+        return self
+
 
 def _number(v: Any) -> float | None:
     if v is None:
@@ -102,25 +149,89 @@ def _number(v: Any) -> float | None:
         return None
 
 
-def _layout(params: Any, chart: ChartInfo) -> list[int]:
-    """Сколько серий в каждой группе графика."""
+def _scaled(col: list[float | None], scale: Scale | None) -> list[float | None]:
+    if not scale:
+        return col
+    div = SCALES[scale][0]
+    return [None if v is None else v / div for v in col]
+
+
+def _layout(params: Any, chart: ChartInfo, n: int) -> list[int]:
+    """Сколько серий в каждой группе графика; ``n`` — сколько серий задано (или пришло из данных)."""
     if params.groups is not None:
         if len(params.groups) != len(chart.groups):
             raise BlockError([f"в графике {len(chart.groups)} групп серий, а в groups — {len(params.groups)}"])
-        if sum(params.groups) != len(params.series):
-            raise BlockError([f"в groups {sum(params.groups)} серий, а в series — {len(params.series)}"])
+        if sum(params.groups) != n:
+            raise BlockError([f"в groups {sum(params.groups)} серий, а в series — {n}"])
         return list(params.groups)
     counts = chart.series_count
-    if sum(counts) == len(params.series):
+    if sum(counts) == n:
         return counts
     if len(counts) == 1:
-        return [len(params.series)]
+        return [n]
     raise BlockError(
         [
-            f"в графике шаблона серий {' + '.join(map(str, counts))} по группам, а задано {len(params.series)}: "
+            f"в графике шаблона серий {' + '.join(map(str, counts))} по группам, а задано {n}: "
             "укажите groups, сколько серий в каждой группе"
         ]
     )
+
+
+def _check_series_from(chart: ChartInfo) -> None:
+    """Серии из данных — только у графика с одной группой серий, не круговой: иначе неясно, в
+    какую группу попадёт новая серия."""
+    if len(chart.groups) != 1:
+        raise BlockError(
+            [
+                f"series_from — только для графика с одной группой серий, а в графике шаблона групп "
+                f"{len(chart.groups)}: перечислите серии в series"
+            ]
+        )
+    if chart.groups[0].kind in PIES:
+        raise BlockError(["у круговой диаграммы одна серия: series_from для неё не подходит, задайте series"])
+
+
+def _series_order(names: list[str], order: str | list[str]) -> list[str]:
+    """Порядок серий: ``name`` — по названию (по кодам символов, как сводная таблица pandas),
+    ``data`` — в порядке появления, список — сначала перечисленные названия, которые есть в
+    данных, потом остальные по названию."""
+    if order == "data":
+        return names
+    by_name = sorted(names)
+    if order == "name":
+        return by_name
+    first = [n for n in dict.fromkeys(order) if n in names]
+    return first + [n for n in by_name if n not in first]
+
+
+def _pivot(
+    params: Any, table: Any, cats: list[str]
+) -> tuple[list[FillSeries], list[str], list[list[float | None]], list[str]]:
+    """Длинный набор (категория, серия, значение) → серии, категории, значения серий и
+    предупреждения. Категории — в порядке появления, пропущенная пара категории и серии — 0,
+    повторы складываются, строки без названия серии пропускаются."""
+    src = params.series_from
+    raw = table.column(src.column).to_pylist()
+    nums = [_number(v) for v in table.column(src.value).to_pylist()]
+    sums: dict[tuple[str, str], float] = {}
+    order: dict[str, None] = {}
+    names: dict[str, None] = {}
+    skipped = 0
+    for cat, r, v in zip(cats, raw, nums, strict=True):
+        name = "" if r is None else category_text(r, params.category_format)
+        if not name.strip():
+            skipped += 1
+            continue
+        order.setdefault(cat)
+        names.setdefault(name)
+        sums[cat, name] = sums.get((cat, name), 0.0) + (v or 0.0)
+    if not names:
+        raise BlockError([f"в наборе «{params.dataset}» нет названий серий: столбец «{src.column}» пуст"])
+    ordered = _series_order(list(names), src.order)
+    specs = [FillSeries(column=src.value, name=n, number_format=src.number_format, scale=src.scale) for n in ordered]
+    values = [_scaled([sums.get((c, n), 0.0) for c in order], src.scale) for n in ordered]
+    notes = [f"в наборе «{params.dataset}» пропущены строки без названия серии: {skipped}"] if skipped else []
+    return specs, list(order), values, notes
 
 
 class ChartFillBlock(BlockPlugin):
@@ -140,10 +251,13 @@ class ChartFillBlock(BlockPlugin):
             ids = ", ".join(f"{c.shape_id} «{c.shape_name}»" for c in example.charts) or "нет"
             return [f"на слайде нет графика с id {shape_id} (графики: {ids})"]
         try:
-            _layout(params, chart)
+            if params.series_from is not None:
+                _check_series_from(chart)
+            else:
+                _layout(params, chart, len(params.series))
         except BlockError as e:
             return e.problems
-        if chart.groups[0].kind in PIES and len(params.series) != 1:
+        if params.series is not None and chart.groups[0].kind in PIES and len(params.series) != 1:
             return ["у круговой диаграммы одна серия"]
         want = params.expected_categories
         if chart.labels_per_category and want is not None and len(want) != chart.categories:
@@ -154,28 +268,36 @@ class ChartFillBlock(BlockPlugin):
 
     def _table(
         self, params: Any, data: BlockData, chart: ChartInfo
-    ) -> tuple[list[str], list[list[float | None]], list[str]]:
-        """Категории, значения серий и предупреждения."""
+    ) -> tuple[list[FillSeries], list[str], list[list[float | None]], list[str]]:
+        """Серии (заданные или из данных), категории, значения серий и предупреждения."""
+        src = params.series_from
+        if src is not None:
+            _check_series_from(chart)
         if params.dataset not in data.datasets:
             raise BlockError([f"нет набора «{params.dataset}»"])
         table = data.datasets[params.dataset]
         names = table.column_names
-        missing = [c for c in [params.categories, *(s.column for s in params.series)] if c not in names]
+        columns = [src.column, src.value] if src is not None else [s.column for s in params.series]
+        missing = [c for c in [params.categories, *columns] if c not in names]
         if missing:
             raise BlockError(
                 [f"в наборе «{params.dataset}» нет столбцов {', '.join(missing)} (есть: {', '.join(names)})"]
             )
         cats = [category_text(v, params.category_format) for v in table.column(params.categories).to_pylist()]
-        values = []
-        for s in params.series:
-            col = [_number(v) for v in table.column(s.column).to_pylist()]
-            if s.scale:
-                div = {"thousand": 1e3, "million": 1e6, "billion": 1e9}[s.scale]
-                col = [None if v is None else v / div for v in col]
-            values.append(col)
-        notes: list[str] = []
         if not cats:
             raise BlockError([f"набор «{params.dataset}» пуст — графику нечего показать"])
+        notes: list[str] = []
+        if src is not None:
+            specs, cats, values, notes = _pivot(params, table, cats)
+            have = sum(chart.series_count)
+            if len(specs) != have:
+                notes.append(
+                    f"серий в наборе «{params.dataset}» {len(specs)}, а в графике шаблона {have}: "
+                    + ("новые серии получают свои цвета" if len(specs) > have else "лишние серии шаблона удалены")
+                )
+        else:
+            specs = list(params.series)
+            values = [_scaled([_number(v) for v in table.column(s.column).to_pylist()], s.scale) for s in specs]
         kind = chart.groups[0].kind if chart.groups else ""
         if kind in PIES:
             limit = params.max_points or chart.categories or len(cats)
@@ -199,15 +321,15 @@ class ChartFillBlock(BlockPlugin):
                         f"«{params.dataset}» {len(cats)}: число и порядок категорий закреплены"
                     ]
                 )
-        return cats, values, notes
+        return specs, cats, values, notes
 
-    def _formats(self, params: Any, chart: ChartInfo, counts: list[int]) -> list[str]:
+    def _formats(self, specs: list[FillSeries], chart: ChartInfo, counts: list[int]) -> list[str]:
         """Формат чисел каждой серии: из сценария, из серии шаблона или формат подписей группы."""
         out = []
         k = 0
         for g, n in zip(chart.groups, counts, strict=True):
             for j in range(n):
-                spec = params.series[k]
+                spec = specs[k]
                 tpl = g.series[min(j, len(g.series) - 1)] if g.series else None
                 out.append(spec.number_format or (tpl.number_format if tpl else None) or g.label_format or "General")
                 k += 1
@@ -250,9 +372,9 @@ class ChartFillBlock(BlockPlugin):
         chart_info = example.chart(shape.shape_id)
         if chart_info is None:
             raise BlockError([f"на слайде шаблона нет графика с id {shape.shape_id}"])
-        counts = _layout(params, chart_info)
-        cats, values, notes = self._table(params, data, chart_info)
-        formats = self._formats(params, chart_info, counts)
+        specs, cats, values, notes = self._table(params, data, chart_info)
+        counts = _layout(params, chart_info, len(specs))
+        formats = self._formats(specs, chart_info, counts)
         notes += self._check_values(chart_info, counts, formats, values)
         chart = shape.chart
         cs = chart._chartSpace
@@ -261,14 +383,14 @@ class ChartFillBlock(BlockPlugin):
             set_series_counts(cs, counts, theme)
         cd = CategoryChartData(number_format=formats[0])
         cd.categories = cats
-        for spec, col, fmt in zip(params.series, values, formats, strict=True):
+        for spec, col, fmt in zip(specs, values, formats, strict=True):
             cd.add_series(spec.name or spec.column, col, number_format=fmt)
         try:
             chart.replace_data(cd)
         except Exception as e:  # тип графика, который python-pptx не умеет заполнять
             raise BlockError([f"python-pptx не заполнил график: {e}"]) from e
         cleanup_points(cs, len(cats), theme)
-        set_label_formats(cs, [s.number_format for s in params.series])
+        set_label_formats(cs, [s.number_format for s in specs])
         problems = check_chart(cs, len(cats))
         if problems:
             raise BlockError(problems)
@@ -321,13 +443,13 @@ class ChartFillBlock(BlockPlugin):
         info = example.chart(shape_id) if example is not None and shape_id is not None else None
         if info is None:
             return None
-        cats, values, notes = self._table(params, data, info)
+        specs, cats, values, notes = self._table(params, data, info)
         kind = info.groups[0].kind if info.groups else "bar"
         series = []
         k = 0
-        for g, n in zip(info.groups, _layout(params, info), strict=True):
+        for g, n in zip(info.groups, _layout(params, info, len(specs)), strict=True):
             for _ in range(n):
-                spec = params.series[k]
+                spec = specs[k]
                 typ = "pie" if g.kind in PIES else ("line" if g.kind == "line" else "bar")
                 item: dict[str, Any] = {"name": spec.name or spec.column, "type": typ, "data": values[k]}
                 if g.grouping in ("stacked", "percentStacked"):
