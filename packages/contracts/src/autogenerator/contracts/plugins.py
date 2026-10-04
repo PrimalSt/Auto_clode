@@ -317,6 +317,13 @@ class StepPlugin(ParamsPlugin):
         Если такого столбца нет в выгрузке, это предупреждение, а не блокировка."""
         return set()
 
+    def columns_written(self, params: Any) -> set[str]:
+        """Столбцы, которые шаг записывает заново целиком (формула, новое имя при
+        переименовании). Если такой id есть и в источнике, дальше по сценарию это уже
+        результат шага: столбец источника нужен, только если его читает сам шаг
+        (``columns_used``). Новые столбцы движок видит и по ``output_schema``."""
+        return set()
+
     def reads_all_columns(self, params: Any, tools: ExpressionTools) -> bool:
         """Нужны ли шагу все столбцы входа (код без ``uses``, ``SELECT *``)."""
         return False

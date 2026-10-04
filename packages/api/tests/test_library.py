@@ -284,6 +284,30 @@ def test_run_journal_rerun_and_backups(home: Home, tmp_path: Path):
     assert home.run_scenario(sid).id == "sales_report-004"
 
 
+def test_run_journal_keeps_missing_column_warning(home: Home, tmp_path: Path):
+    # Март загружен, пока сохранённых сценариев не было: пропавший «Менеджер» без похожей замены
+    # оставлен пустым. Сохранённый потом сценарий его использует — запуск предупреждает, и
+    # предупреждение остаётся в журнале запуска.
+    example_home(home)
+    rows = MAR.read_text(encoding="cp1251").splitlines()
+    drop = rows[0].split(";").index("Менеджер")
+    no_manager = [";".join(c for i, c in enumerate(r.split(";")) if i != drop) for r in rows]
+    mar = tmp_path / MAR.name
+    mar.write_text("\n".join(no_manager) + "\n", encoding="cp1251")
+    home.upload("sales_crm", mar)
+    sid = home.save_scenario(EXAMPLE / "scenario.yaml", "sales_report").record.id
+    run = home.run_scenario(sid)
+    assert run.status == RunStatus.OK and run.result is not None
+
+    def missing(r: RunRecord) -> list[str]:
+        return [str(i) for i in (r.result.warnings if r.result else []) if "в загрузке #" in i.message]
+
+    [w] = missing(run)
+    assert "в загрузке #3 «Продажи_2026-03.csv» (2026-03) нет столбца «Менеджер» (manager)" in w
+    assert missing(home.run_record(run.id)) == [w]
+    assert missing(home.run_scenario(sid, period="2026-02")) == []
+
+
 def test_failed_run_is_recorded(home: Home, tmp_path: Path):
     example_home(home)
     sid = home.save_scenario(EXAMPLE / "scenario.yaml", "sales_report").record.id

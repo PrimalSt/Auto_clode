@@ -132,7 +132,7 @@ class InputPlan:
     source_columns: set[str] | None = None
     """Столбцы, которые читаются из истории; ``None`` — все."""
     produced: set[str] = field(default_factory=set)
-    """Столбцы, которые добавили шаги (их нет в источнике)."""
+    """Столбцы, которые шаги добавили или записали заново: в них уже не данные источника."""
     reads_all: bool = False
     """Какому-то шагу нужны все столбцы входа."""
 
@@ -375,7 +375,7 @@ class _Analyzer:
         if ip.needed is not None:
             ip.needed |= cols
         if ip.schema_after is None:
-            for c in sorted(cols & set(ip.schema.columns)):
+            for c in sorted((cols & set(ip.schema.columns)) - ip.produced):
                 self.use(input_id, c, node)
             return
         available = set(ip.schema_after)
@@ -499,6 +499,7 @@ class _Analyzer:
                 sp.cacheable = plugin.cacheable(params)
                 mentioned = plugin.columns_mentioned(params)
                 reads_all = plugin.reads_all_columns(params, tools)
+                written = plugin.columns_written(params)
             except (AgenError, UserCodeError) as e:
                 self.error(snode, e.message)
                 current = None
@@ -522,7 +523,7 @@ class _Analyzer:
                     if c in source_cols and c not in produced:
                         self.use(inp.id, c, snode, weak=True)
             else:
-                for c in sorted(used & source_cols):
+                for c in sorted((used & source_cols) - produced):
                     self.use(inp.id, c, snode)
             ip.reads_all = ip.reads_all or reads_all
             if current is not None:
@@ -534,6 +535,8 @@ class _Analyzer:
                 if after is not None:
                     produced |= set(after) - set(current)
                 current = after
+            # Формула с id столбца источника заменяет его: дальше по сценарию это результат шага.
+            produced |= written
             ip.steps.append(sp)
         ip.schema_after = current
 

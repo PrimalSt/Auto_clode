@@ -80,6 +80,11 @@ class ManifestHistory:
 
         return coverage(self.manifests[input_id])
 
+    def uploads(self, input_id: str, span: DateSpan) -> list[UploadRef]:
+        from autogenerator.history import uploads_in
+
+        return uploads_in(self.manifests[input_id], span)
+
     def fingerprint(self, input_id: str) -> str | None:
         """Отпечаток манифеста: меняется с каждой загрузкой, правкой периода или источника."""
         m = self.manifests.get(input_id)
@@ -202,6 +207,7 @@ def _ingest_input(
                 period=res.period,
                 rows=up.rows,
                 original_name=path.name,
+                file_columns=sorted(set(res.reconcile.mapping.values())) or None,
             )
         )
         log.append({"file": str(path), "upload": upload_id, "rows": up.rows, "period": res.period.key})

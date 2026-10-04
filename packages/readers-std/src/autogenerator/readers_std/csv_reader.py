@@ -417,7 +417,7 @@ class CsvReader(ReaderPlugin):
         with path.open("rb") as f:
             head = f.read(4096)
         if head.startswith(b"PK\x03\x04") or head.startswith(b"\xd0\xcf\x11\xe0"):
-            return False  # zip (xlsx) или старый двоичный формат Office (xls)
+            return False  # zip (xlsx, xlsb) или старый двоичный формат Office (xls)
         if path.suffix.lower() in (".csv", ".txt", ".tsv"):
             return True
         return b"\x00" not in head

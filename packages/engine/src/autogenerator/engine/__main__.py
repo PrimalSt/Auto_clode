@@ -23,6 +23,7 @@ from autogenerator.contracts import (
     DType,
     Period,
     SourceSpec,
+    UploadRef,
 )
 from autogenerator.contracts.yaml_io import load_model_list, load_yaml
 from autogenerator.plugin_host import PluginRegistry
@@ -69,6 +70,9 @@ class FolderHistory:
         # Какими загрузками собраны файлы, здесь неизвестно: считаем, что данные есть за всё
         # время, и предупреждений о пропусках не выдаём.
         return [DateSpan(start=None, end_exclusive=date.max)]
+
+    def uploads(self, input_id: str, span: DateSpan) -> list[UploadRef]:
+        return []  # загрузки неизвестны: проверки столбцов загрузок нет
 
     def fingerprint(self, input_id: str) -> str | None:
         return None

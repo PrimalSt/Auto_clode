@@ -7,4 +7,5 @@ examples/**/*.csv -text
 *.potx binary
 *.xlsx binary
 *.xls binary
+*.xlsb binary
 *.parquet binary

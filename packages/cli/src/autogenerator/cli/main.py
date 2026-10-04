@@ -377,7 +377,7 @@ def _preview_slide(
 @app.command()
 def inspect(
     file: Annotated[Path, typer.Argument(help="Файл выгрузки: CSV или Excel")],
-    format: Annotated[str | None, typer.Option(help="csv, xlsx или xls")] = None,
+    format: Annotated[str | None, typer.Option(help="csv, xlsx, xls или xlsb")] = None,
     encoding: Annotated[str | None, typer.Option(help="utf-8, utf-8-sig, cp1251; по умолчанию — определить")] = None,
     delimiter: Annotated[str | None, typer.Option(help="Разделитель CSV; tab — табуляция")] = None,
     no_quote: Annotated[bool, typer.Option("--no-quote", help="В CSV нет кавычек")] = False,

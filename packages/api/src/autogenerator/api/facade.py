@@ -38,7 +38,7 @@ from autogenerator.contracts import (
 )
 from autogenerator.contracts.yaml_io import load_model_list, load_yaml
 
-DATA_SUFFIXES = {".csv", ".txt", ".tsv", ".xlsx", ".xlsm", ".xls"}
+DATA_SUFFIXES = {".csv", ".txt", ".tsv", ".xlsx", ".xlsm", ".xls", ".xlsb"}
 
 
 def load_scenario(path: str | Path) -> ScenarioSpec:
