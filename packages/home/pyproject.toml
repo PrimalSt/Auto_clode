@@ -1,0 +1,17 @@
+[project]
+name = "autogenerator-home"
+version = "0.1.0"
+description = "Папка данных приложения: источники, загрузки, сценарии, шаблоны, запуски — без модулей обработки."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+    "autogenerator-storage",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.home"

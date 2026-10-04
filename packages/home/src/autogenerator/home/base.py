@@ -9,6 +9,8 @@ from types import TracebackType
 from autogenerator.contracts import AgenError, ErrorCode, ProgressCallback, ReadProgress
 from autogenerator.storage import DataFolder, FolderLock, LocalBlobStore, SqliteMetadataStore
 
+from .workers import WorkerApi
+
 
 def file_sha256(path: Path, progress: ProgressCallback | None = None) -> str:
     h = hashlib.sha256()
@@ -24,12 +26,14 @@ def file_sha256(path: Path, progress: ProgressCallback | None = None) -> str:
 
 
 class HomeBase:
-    """Папка данных: метаданные, файлы загрузок и блокировка записи."""
+    """Папка данных: метаданные, файлы загрузок и блокировка записи. Тяжёлую работу делает
+    исполнитель ``worker`` (``workers.WorkerApi``)."""
 
-    def __init__(self, folder: DataFolder, store: SqliteMetadataStore, lock: FolderLock | None):
+    def __init__(self, folder: DataFolder, store: SqliteMetadataStore, lock: FolderLock | None, worker: WorkerApi):
         self.folder = folder
         self.store = store
         self.blobs = LocalBlobStore(folder)
+        self.worker = worker
         self._lock = lock
 
     @property

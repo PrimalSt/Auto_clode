@@ -1,0 +1,21 @@
+[project]
+name = "autogenerator-server"
+version = "0.1.0"
+description = "Локальный сервер приложения: REST API для окна, очередь заданий, поток событий (SSE), токен."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+    "autogenerator-storage",
+    "autogenerator-home",
+    "autogenerator-runner",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.server"

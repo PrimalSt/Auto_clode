@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from autogenerator import worker
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
@@ -86,12 +85,6 @@ def check_id(value: str, what: str) -> str:
     return value
 
 
-def make_id(name: str, fallback: str) -> str:
-    ident = worker.suggest_id(name) if name else ""
-    ident = ident.removeprefix("c_")
-    return ident if ident and ident != "column" and ID_RE.match(ident) else fallback
-
-
 def _set_line(text: str, key: str, value: str, after: str | None = None) -> str:
     """Заменить верхнеуровневую строку ``key: …`` в тексте YAML (или вставить её после
     ``after:``), не трогая комментарии и остальной текст."""
@@ -111,6 +104,11 @@ def _now() -> datetime:
 
 
 class LibraryMixin(HomeBase):
+    def _make_id(self, name: str, fallback: str) -> str:
+        ident = self.worker.suggest_id(name) if name else ""
+        ident = ident.removeprefix("c_")
+        return ident if ident and ident != "column" and ID_RE.match(ident) else fallback
+
     # --- сценарии ----------------------------------------------------------------
 
     def scenarios(self) -> list[ScenarioRecord]:
@@ -137,28 +135,63 @@ class LibraryMixin(HomeBase):
         *,
         theme: str | Path | None = None,
         comment: str = "",
+        theme_files: bool = True,
     ) -> SavedScenario:
         """Сохранить сценарий из YAML (или готовой спецификации) в папку данных: новый — с
         версией 1, существующий — новой версией (F-503). id по умолчанию — по названию
         сценария. Оформление — ``theme`` или поле ``theme`` сценария: id шаблона из папки
         данных или путь к .pptx (относительно файла сценария); файл загружается в папку
-        данных, и в сценарии остаётся id шаблона."""
-        self._need_write()
-        text: str | None = None
+        данных, и в сценарии остаётся id шаблона. ``theme_files=False`` — только id шаблона
+        (так сохраняет окно: шаблон загружается в разделе «Оформление»)."""
         if isinstance(scenario, ScenarioSpec):
-            spec, base = scenario, Path.cwd()
-        else:
-            p = Path(scenario)
-            if not p.is_file():
-                raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Файл не найден: {p}")
-            text = p.read_text(encoding="utf-8")
-            spec, base = worker.load_scenario(loads_yaml(text, p.name), p.name), p.resolve().parent
-        sid = check_id(scenario_id, "сценария") if scenario_id else make_id(spec.name, "scenario")
+            self._need_write()
+            return self._save(scenario, None, scenario_id, Path.cwd(), theme, comment, theme_files)
+        p = Path(scenario)
+        if not p.is_file():
+            raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Файл не найден: {p}")
+        return self.save_scenario_text(
+            p.read_text(encoding="utf-8"),
+            scenario_id,
+            theme=theme,
+            comment=comment,
+            base=p.resolve().parent,
+            where=p.name,
+            theme_files=theme_files,
+        )
+
+    def save_scenario_text(
+        self,
+        text: str,
+        scenario_id: str | None = None,
+        *,
+        theme: str | Path | None = None,
+        comment: str = "",
+        base: str | Path | None = None,
+        where: str = "сценарий",
+        theme_files: bool = True,
+    ) -> SavedScenario:
+        """То же из текста YAML (редактор кода в окне): текст сохраняется как есть, с
+        комментариями. ``base`` — папка, от которой считается путь к шаблону-файлу."""
+        self._need_write()
+        spec = self.worker.load_scenario(loads_yaml(text, where), where)
+        return self._save(spec, text, scenario_id, Path(base) if base else Path.cwd(), theme, comment, theme_files)
+
+    def _save(
+        self,
+        spec: ScenarioSpec,
+        text: str | None,
+        scenario_id: str | None,
+        base: Path,
+        theme: str | Path | None,
+        comment: str,
+        theme_files: bool,
+    ) -> SavedScenario:
+        sid = check_id(scenario_id, "сценария") if scenario_id else self._make_id(spec.name, "scenario")
         ref = str(theme) if theme is not None else spec.theme
         imported: ThemeImport | None = None
         pinned: tuple[str, int] | None = None
         if ref is not None:
-            imported, pinned = self._scenario_theme(ref, base, sid)
+            imported, pinned = self._scenario_theme(ref, base, sid, theme_files)
             if spec.theme != pinned[0]:
                 spec = spec.model_copy(update={"theme": pinned[0]})
                 if text is not None:
@@ -166,10 +199,18 @@ class LibraryMixin(HomeBase):
         rec = self.store.save_scenario(sid, spec, text, theme=pinned, comment=comment)
         return SavedScenario(rec, self.validate_scenario(sid), imported if imported and not imported.skipped else None)
 
-    def _scenario_theme(self, ref: str, base: Path, scenario_id: str) -> tuple[ThemeImport | None, tuple[str, int]]:
+    def _scenario_theme(
+        self, ref: str, base: Path, scenario_id: str, files: bool = True
+    ) -> tuple[ThemeImport | None, tuple[str, int]]:
         if self.store.has_theme(ref):
             t = self.store.get_theme(ref)
             return None, (t.id, t.version)
+        if not files:
+            raise AgenError(
+                ErrorCode.NOT_FOUND,
+                f"Шаблона оформления «{ref}» нет в папке данных",
+                hint="Загрузите шаблон в разделе «Оформление» и выберите его в сценарии.",
+            )
         p = Path(ref)
         p = p if p.is_absolute() else base / p
         if p.is_file():
@@ -200,7 +241,7 @@ class LibraryMixin(HomeBase):
         """Проверка сценария на заданной версии шаблона."""
         srcs = self._scenario_sources(spec)
         try:
-            return worker.validate(
+            return self.worker.validate(
                 RunRequest(scenario=spec, sources=srcs, inputs={}, theme=tv.pptx_uri, theme_roles=tv.roles)
             )
         except AgenError as e:
@@ -272,7 +313,7 @@ class LibraryMixin(HomeBase):
             same = self._same_file(sha)
             if same is not None:
                 return same
-            tid = make_id(p.stem, "theme")
+            tid = self._make_id(p.stem, "theme")
             if self.store.has_theme(tid):
                 raise AgenError(
                     ErrorCode.ALREADY_EXISTS,
@@ -316,7 +357,7 @@ class LibraryMixin(HomeBase):
         if own is not None and self.store.has_theme(own) and self.store.get_theme(own).current.original_name == p.name:
             tid = own
         else:
-            tid = make_id(p.stem, "theme")
+            tid = self._make_id(p.stem, "theme")
             if self.store.has_theme(tid):
                 tid = self._free_theme_id(tid)
         return self._add_theme_version(p, tid, sha, name=None, comment="")
@@ -380,7 +421,7 @@ class LibraryMixin(HomeBase):
 
     def _import(self, path: Path, roles: Mapping[str, str], strict: bool) -> tuple[ThemeManifest, dict[str, str]]:
         with tempfile.TemporaryDirectory(prefix="theme-", dir=self.folder.tmp) as tmp:
-            manifest = worker.import_theme(path, tmp, roles=dict(roles), strict_roles=strict)
+            manifest = self.worker.import_theme(path, tmp, roles=dict(roles), strict_roles=strict)
         kept = {str(b.role): b.layout_key for b in manifest.roles if not b.guessed and str(b.role) in roles}
         return manifest, kept
 

@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from autogenerator import worker
 from autogenerator.contracts import (
     AgenError,
     ErrorCode,
@@ -155,7 +154,7 @@ class RunsMixin(HomeBase):
             temp_dir=str(self.folder.tmp / "engine"),
         )
         try:
-            result = worker.run(req)
+            result = self.worker.run(req)
         except BaseException:
             self.store.update_run(run_id, status=RunStatus.INTERRUPTED, finished_at=_now())
             raise
