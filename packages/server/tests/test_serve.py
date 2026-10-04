@@ -54,15 +54,18 @@ def test_server_process(tmp_path: Path):
         info = ready(proc)
         url = str(info["url"])
         assert url.startswith("http://127.0.0.1:")
+        # В Windows python.exe окружения .venv — пускач, а сервер — его дочерний процесс.
+        pid = info["pid"]
+        assert pid == proc.pid or (sys.platform == "win32" and sys.prefix != sys.base_prefix)
         server = json.loads((home / "server.json").read_text(encoding="utf-8"))
-        assert server["port"] == info["port"] and server["pid"] == proc.pid
+        assert server["port"] == info["port"] and server["pid"] == pid
         assert (home / "cli.token").read_text(encoding="utf-8") == TOKEN
         if sys.platform != "win32":
             assert (home / "cli.token").stat().st_mode & 0o077 == 0
         auth = {"Authorization": f"Bearer {TOKEN}"}
         assert httpx.get(f"{url}/api/health").json()["ok"] is True
         assert httpx.get(f"{url}/api/system").status_code == 401
-        assert httpx.get(f"{url}/api/system", headers=auth).json()["pid"] == proc.pid
+        assert httpx.get(f"{url}/api/system", headers=auth).json()["pid"] == pid
 
         # Второй сервер на ту же папку данных не запускается.
         second = start(home)
