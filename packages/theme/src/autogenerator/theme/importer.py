@@ -14,6 +14,7 @@ from pptx.util import Emu
 
 from autogenerator.contracts import AgenError, ErrorCode, TemplateSlideInfo, ThemeManifest
 
+from .decorations import find_decorations
 from .fonts import template_fonts
 from .layouts import guess_roles, read_layouts
 from .lint import lint
@@ -94,9 +95,18 @@ def make_working_copy(src: Path, dst: Path) -> list[str]:
     return notes
 
 
-def import_template(path: str | Path, out_dir: str | Path, *, check: bool = True) -> ThemeManifest:
+def import_template(
+    path: str | Path,
+    out_dir: str | Path,
+    *,
+    check: bool = True,
+    roles: dict[str, str] | None = None,
+    strict_roles: bool = False,
+) -> ThemeManifest:
     """Импортировать шаблон: рабочая копия в ``out_dir/template.pptx`` и манифест с отчётом
-    проверки (``check=False`` — без проверки, для быстрого просмотра)."""
+    проверки (``check=False`` — без проверки, для быстрого просмотра). ``roles`` —
+    подтверждённые роли макетов (роль → ключ макета); ``strict_roles`` — неподходящий макет
+    подтверждения — ошибка, а не замечание."""
     src = Path(path)
     if not src.exists():
         raise AgenError(ErrorCode.FILE_NOT_FOUND, f"Шаблон не найден: {src}")
@@ -109,7 +119,7 @@ def import_template(path: str | Path, out_dir: str | Path, *, check: bool = True
     width, height = int(prs.slide_width or Emu(0)), int(prs.slide_height or Emu(0))
     pairs = read_layouts(prs)
     layouts = [info for info, _ in pairs]
-    roles, role_notes = guess_roles(layouts, width, height)
+    roles_, role_notes = guess_roles(layouts, width, height, roles, strict_roles)
     notes += role_notes
     keys = {layout.part.partname: info.key for info, layout in pairs}
     ids = [int(s.get("id")) for s in prs.slides._sldIdLst]
@@ -117,6 +127,12 @@ def import_template(path: str | Path, out_dir: str | Path, *, check: bool = True
         slide_info(slide, number, sid, keys.get(slide.slide_layout.part.partname, ""))
         for number, (sid, slide) in enumerate(zip(ids, prs.slides, strict=True), start=1)
     ]
+    roles_ = find_decorations(
+        prs,
+        roles_,
+        {info.key: layout for info, layout in pairs},
+        [(s.slide_id, slide, s.layout_key) for s, slide in zip(slides, prs.slides, strict=True)],
+    )
     fonts = template_fonts(prs)
     report = lint(prs, slides, layouts, fonts, width, height) if check else []
     return ThemeManifest(
@@ -126,7 +142,7 @@ def import_template(path: str | Path, out_dir: str | Path, *, check: bool = True
         slide_width=width,
         slide_height=height,
         layouts=layouts,
-        roles=roles,
+        roles=roles_,
         slides=slides,
         fonts=fonts,
         lint=report,

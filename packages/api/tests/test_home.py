@@ -42,10 +42,10 @@ def test_draft_create_upload_history(home: Home, tmp_path: Path):
     rec = out.record
     assert (rec.seq, rec.period.key, rec.status, rec.rows) == (1, "2026-01", UploadStatus.ACTIVE, 751)
     assert rec.profile[spec.period_column].exact and rec.schema_snapshot is not None
-    # В февральской выгрузке столбцы названы иначе: без aliases она не подходит.
+    # В февральской выгрузке столбцы названы иначе: загрузка ждёт подтверждения сопоставления.
     with pytest.raises(AgenError) as e:
         home.upload("sales", FEB)
-    assert e.value.code == ErrorCode.SCHEMA_BLOCKED and "столбца периода" in str(e.value)
+    assert e.value.code == ErrorCode.SCHEMA_REVIEW and "«Дата заказа» (id order_date) → «Дата»" in str(e.value)
     home.upload("sales", MAR)
     # Тот же файл второй раз — только с force.
     with pytest.raises(AgenError) as e:

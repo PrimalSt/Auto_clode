@@ -28,9 +28,9 @@ def test_source_from_file_upload_and_history(tmp_path: Path):
     assert "Отчётный период по умолчанию: 2026-03" in out
     out = agen("source", "list")
     assert "sales" in out and "загрузок 2, 2026-01 … 2026-03" in out
-    # Повторная загрузка того же файла и файл с другими названиями столбцов — ошибки.
+    # Файл с другими названиями столбцов ждёт подтверждения сопоставления.
     r = runner.invoke(app, ["upload", "add", "sales", str(DATA / "sales" / "Продажи_2026-02.csv")])
-    assert r.exit_code == 1 and "столбца периода" in r.output
+    assert r.exit_code == 1 and "«Дата заказа» (id order_date) → «Дата»" in r.output and "--accept-mapping" in r.output
 
 
 def test_import_export_and_set(tmp_path: Path):

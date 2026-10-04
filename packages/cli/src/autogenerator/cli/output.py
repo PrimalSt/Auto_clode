@@ -17,6 +17,7 @@ from autogenerator.contracts import (
     RaggedRows,
     ReadOptions,
     ReadProgress,
+    RunResult,
     SchemaSnapshot,
 )
 
@@ -177,6 +178,35 @@ def print_snapshot(file: Path, snap: SchemaSnapshot, preview: int = 0) -> None:
             typer.echo("    " + " | ".join(_short(v, 16) for v in row))
 
 
+def slides_text(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} слайд"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} слайда"
+    return f"{n} слайдов"
+
+
+def print_result(res: RunResult, verbose: bool) -> None:
+    if res.period is not None:
+        typer.echo(f"Отчётный период: {res.period.key}")
+    for inp, uploads in res.inputs.items():
+        parts = ", ".join(f"{Path(u['file']).name} ({u['period']}, {u['rows']} строк)" for u in uploads)
+        where = " (история из папки данных)" if inp in res.from_home else ""
+        typer.echo(f"Вход {inp}{where}: {parts}")
+    for n in res.nodes:
+        if verbose or n.state != "ok":
+            rows = f" {n.rows_in}→{n.rows_out} строк" if n.rows_in is not None else ""
+            typer.echo(f"  {n.state:<7} {n.id}{rows}{' — ' + n.message if n.message else ''}")
+    for i in res.issues:
+        if i.level == IssueLevel.INFO and not verbose:
+            continue
+        typer.echo(f"  {LEVEL_MARK[i.level]} {i}")
+    if res.output_path:
+        typer.echo(f"Готово: {res.output_path} ({slides_text(res.slides)}, {res.seconds:.1f} с)")
+    if res.workdir:
+        typer.echo(f"Рабочая папка: {res.workdir}")
+
+
 def utf8_output() -> None:
     """В Windows вывод в канал или файл идёт в кодировке системы, и русский текст ломается.
     В консоли Python и так пишет Юникодом; для канала и файла включаем UTF-8."""
@@ -195,7 +225,9 @@ __all__ = [
     "fmt_int",
     "home_option",
     "print_profile",
+    "print_result",
     "print_snapshot",
     "read_options_from",
+    "slides_text",
     "utf8_output",
 ]

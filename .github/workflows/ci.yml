@@ -60,6 +60,15 @@ jobs:
           uv run agen upload add sales_plan examples/sales/data/plan/*.xlsx
           uv run agen history sales_crm
           uv run agen run examples/sales/scenario.yaml --output-dir out-home
+      - name: Сохранённый сценарий — шаблон в папке данных, запуск по id, история запусков
+        shell: bash
+        env:
+          AGEN_HOME: ${{ runner.temp }}/agen-home
+        run: |
+          uv run agen scenario add examples/sales/scenario.yaml --id sales
+          uv run agen run sales -o out-saved
+          uv run agen runs list
+          uv run agen backup create
       - uses: actions/upload-artifact@v4
         with:
           name: report-${{ matrix.os }}

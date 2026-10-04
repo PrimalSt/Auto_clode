@@ -35,6 +35,13 @@ def load_yaml(path: str | Path) -> Any:
         raise AgenError(ErrorCode.SPEC_INVALID, f"Ошибка в YAML {p.name}: {e}") from e
 
 
+def loads_yaml(text: str, where: str = "YAML") -> Any:
+    try:
+        return _yaml().load(text)
+    except YAMLError as e:
+        raise AgenError(ErrorCode.SPEC_INVALID, f"Ошибка в YAML {where}: {e}") from e
+
+
 def dump_yaml(data: Any) -> str:
     buf = io.StringIO()
     _yaml().dump(data, buf)

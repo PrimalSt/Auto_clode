@@ -43,6 +43,8 @@ from autogenerator.contracts import (
     UploadStatus,
 )
 
+from .tools import environment_info
+
 if TYPE_CHECKING:
     import polars as pl
 
@@ -132,7 +134,7 @@ def validate(req: RunRequest, registry: PluginRegistry | None = None) -> list[Is
     plan = analyze(req.scenario, registry, _schemas(req.scenario, sources))
     issues += plan.issues
     with tempfile.TemporaryDirectory(prefix="agen-validate-") as tmp:
-        theme = import_template(req.theme, tmp)
+        theme = import_template(req.theme, tmp, check=False, roles=req.theme_roles)
     issues += validate_slides(req.scenario, registry, theme)
     return issues
 
@@ -233,7 +235,9 @@ def run(req: RunRequest) -> RunResult:
     workdir.mkdir(parents=True, exist_ok=True)
     result = RunResult(ok=False, scenario=req.scenario.name, workdir=None if temp else str(workdir))
     try:
-        _run(req, workdir, result, PluginRegistry.discover())
+        registry = PluginRegistry.discover()
+        result.environment = environment_info(registry.manifest())
+        _run(req, workdir, result, registry)
     except AgenError as e:
         result.issues.append(Issue(level=IssueLevel.ERROR, code=str(e.code), message=str(e)))
     finally:
@@ -256,7 +260,7 @@ def _run(req: RunRequest, workdir: Path, result: RunResult, registry: PluginRegi
     result.issues += _source_issues(scenario, sources)
     plan = analyze(scenario, registry, _schemas(scenario, sources))
     result.issues += plan.issues
-    theme = import_template(req.theme, workdir / "theme")
+    theme = import_template(req.theme, workdir / "theme", check=False, roles=req.theme_roles)
     _dump(workdir / "theme" / "manifest.json", theme)
     result.issues += validate_slides(scenario, registry, theme, preview=req.preview)
     if result.errors:

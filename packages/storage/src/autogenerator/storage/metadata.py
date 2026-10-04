@@ -1,4 +1,5 @@
-"""Метаданные в SQLite (режим WAL) через SQLAlchemy 2 (ARCHITECTURE.md, раздел 9).
+"""Метаданные в SQLite (режим WAL) через SQLAlchemy 2 (ARCHITECTURE.md, раздел 9):
+источники, загрузки, сценарии, шаблоны оформления, запуски и их версии.
 
 Схема создаётся и обновляется миграциями Alembic при открытии базы; перед миграцией
 существующей базы делается резервная копия в ``backups``. Пишет метаданные один процесс,
@@ -31,16 +32,36 @@ from autogenerator.contracts import (
     Period,
     PeriodUnit,
     ReadOptions,
+    RunRecord,
+    RunResult,
+    RunStatus,
+    ScenarioInputRef,
+    ScenarioRecord,
+    ScenarioSpec,
+    ScenarioVersionRecord,
     SchemaSnapshot,
     SourceRecord,
     SourceSpec,
     SourceVersionRecord,
+    ThemeManifest,
+    ThemeRecord,
+    ThemeVersionRecord,
     UploadRecord,
     UploadRef,
     UploadStatus,
 )
 
-from .tables import source_versions, sources, uploads
+from .tables import (
+    runs,
+    scenario_inputs,
+    scenario_versions,
+    scenarios,
+    source_versions,
+    sources,
+    theme_versions,
+    themes,
+    uploads,
+)
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 
@@ -221,6 +242,13 @@ class SqliteMetadataStore:
 
     def delete_source(self, source_id: str) -> None:
         self.get_source(source_id)
+        users = sorted({r.scenario_id or "" for r in self.scenarios_using_source(source_id)})
+        if users:
+            raise AgenError(
+                ErrorCode.IN_USE,
+                f"Источник «{source_id}» используют сценарии: {', '.join(users)}",
+                hint="Сначала уберите его из сценариев или удалите их: agen scenario delete <id>.",
+            )
         with self.engine.begin() as conn:
             conn.execute(delete(uploads).where(uploads.c.source_id == source_id))
             conn.execute(delete(source_versions).where(source_versions.c.source_id == source_id))
@@ -286,6 +314,432 @@ class SqliteMetadataStore:
             for u in self.list_uploads(source_id)
         ]
         return HistoryManifest.for_source(spec, refs)
+
+    # --- сценарии ----------------------------------------------------------------
+
+    def list_scenarios(self) -> list[ScenarioRecord]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(scenarios).where(scenarios.c.workspace_id == self.workspace).order_by(scenarios.c.id)
+            ).mappings()
+            return [self._scenario(conn, r) for r in rows]
+
+    def has_scenario(self, scenario_id: str) -> bool:
+        with self.engine.connect() as conn:
+            return conn.execute(select(scenarios.c.id).where(scenarios.c.id == scenario_id)).first() is not None
+
+    def get_scenario(self, scenario_id: str) -> ScenarioRecord:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(scenarios).where(scenarios.c.id == scenario_id)).mappings().first()
+            if row is None:
+                known = ", ".join(r.id for r in self.list_scenarios()) or "нет"
+                raise AgenError(
+                    ErrorCode.NOT_FOUND,
+                    f"Сценария «{scenario_id}» нет в папке данных (есть: {known})",
+                    hint="Добавьте его: agen scenario add сценарий.yaml",
+                )
+            return self._scenario(conn, row)
+
+    def _scenario(self, conn: Connection, row: RowMapping) -> ScenarioRecord:
+        ver = (
+            conn.execute(
+                select(scenario_versions).where(
+                    scenario_versions.c.scenario_id == row["id"], scenario_versions.c.number == row["current_version"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        inputs = conn.execute(
+            select(scenario_inputs)
+            .where(scenario_inputs.c.scenario_id == row["id"])
+            .order_by(scenario_inputs.c.input_id)
+        ).mappings()
+        return ScenarioRecord(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            version=row["current_version"],
+            current=_scenario_version(ver),
+            inputs=[
+                ScenarioInputRef(input_id=i["input_id"], source_id=i["source_id"], main=i["is_main"]) for i in inputs
+            ],
+            created_at=_utc(row["created_at"]),
+        )
+
+    def save_scenario(
+        self,
+        scenario_id: str,
+        spec: ScenarioSpec,
+        text: str | None = None,
+        theme: tuple[str, int] | None = None,
+        comment: str = "",
+    ) -> ScenarioRecord:
+        """Сохранить сценарий: новый — с версией 1, существующий — новой версией (F-503).
+        Если ни сценарий, ни его текст, ни версия шаблона не изменились, версия не создаётся."""
+        now = _now()
+        spec_json = spec.model_dump(mode="json")
+        theme_id, theme_version = theme if theme else (None, None)
+        with self.engine.begin() as conn:
+            row = conn.execute(select(scenarios).where(scenarios.c.id == scenario_id)).mappings().first()
+            if row is None:
+                number = 1
+                conn.execute(
+                    insert(scenarios).values(
+                        id=scenario_id, workspace_id=self.workspace, name=spec.name, current_version=1, created_at=now
+                    )
+                )
+            else:
+                cur = (
+                    conn.execute(
+                        select(scenario_versions).where(
+                            scenario_versions.c.scenario_id == scenario_id,
+                            scenario_versions.c.number == row["current_version"],
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                same = (
+                    cur["spec"] == spec_json
+                    and (cur["text"] or None) == (text or None)
+                    and cur["theme_id"] == theme_id
+                    and cur["theme_version"] == theme_version
+                )
+                if same:
+                    return self._scenario(conn, row)
+                number = row["current_version"] + 1
+                conn.execute(
+                    update(scenarios)
+                    .where(scenarios.c.id == scenario_id)
+                    .values(current_version=number, name=spec.name)
+                )
+            conn.execute(
+                insert(scenario_versions).values(
+                    scenario_id=scenario_id,
+                    number=number,
+                    spec=spec_json,
+                    text=text,
+                    theme_id=theme_id,
+                    theme_version=theme_version,
+                    comment=comment or ("создан" if number == 1 else ""),
+                    created_at=now,
+                )
+            )
+            conn.execute(delete(scenario_inputs).where(scenario_inputs.c.scenario_id == scenario_id))
+            main = spec.main_input.id
+            for inp in spec.inputs:
+                conn.execute(
+                    insert(scenario_inputs).values(
+                        scenario_id=scenario_id, input_id=inp.id, source_id=inp.source, is_main=inp.id == main
+                    )
+                )
+            row = conn.execute(select(scenarios).where(scenarios.c.id == scenario_id)).mappings().one()
+            return self._scenario(conn, row)
+
+    def scenario_versions(self, scenario_id: str) -> list[ScenarioVersionRecord]:
+        self.get_scenario(scenario_id)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(scenario_versions)
+                .where(scenario_versions.c.scenario_id == scenario_id)
+                .order_by(scenario_versions.c.number)
+            ).mappings()
+            return [_scenario_version(r) for r in rows]
+
+    def get_scenario_version(self, scenario_id: str, number: int) -> ScenarioVersionRecord:
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(scenario_versions).where(
+                        scenario_versions.c.scenario_id == scenario_id, scenario_versions.c.number == number
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            self.get_scenario(scenario_id)
+            raise AgenError(ErrorCode.NOT_FOUND, f"У сценария «{scenario_id}» нет версии {number}")
+        return _scenario_version(row)
+
+    def scenarios_using_source(self, source_id: str) -> list[ScenarioInputRef]:
+        """Входы сценариев, которые берут историю этого источника."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(scenario_inputs)
+                .where(scenario_inputs.c.source_id == source_id)
+                .order_by(scenario_inputs.c.scenario_id, scenario_inputs.c.input_id)
+            ).mappings()
+            return [
+                ScenarioInputRef(
+                    input_id=r["input_id"], source_id=source_id, main=r["is_main"], scenario_id=r["scenario_id"]
+                )
+                for r in rows
+            ]
+
+    def scenarios_using_theme(self, theme_id: str) -> list[ScenarioRecord]:
+        return [s for s in self.list_scenarios() if s.current.theme_id == theme_id]
+
+    def delete_scenario(self, scenario_id: str) -> None:
+        self.get_scenario(scenario_id)
+        with self.engine.begin() as conn:
+            conn.execute(delete(runs).where(runs.c.scenario_id == scenario_id))
+            conn.execute(delete(scenario_inputs).where(scenario_inputs.c.scenario_id == scenario_id))
+            conn.execute(delete(scenario_versions).where(scenario_versions.c.scenario_id == scenario_id))
+            conn.execute(delete(scenarios).where(scenarios.c.id == scenario_id))
+
+    # --- шаблоны оформления ------------------------------------------------------
+
+    def list_themes(self) -> list[ThemeRecord]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(themes).where(themes.c.workspace_id == self.workspace).order_by(themes.c.id)
+            ).mappings()
+            return [self._theme(conn, r) for r in rows]
+
+    def has_theme(self, theme_id: str) -> bool:
+        with self.engine.connect() as conn:
+            return conn.execute(select(themes.c.id).where(themes.c.id == theme_id)).first() is not None
+
+    def get_theme(self, theme_id: str) -> ThemeRecord:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(themes).where(themes.c.id == theme_id)).mappings().first()
+            if row is None:
+                known = ", ".join(r.id for r in self.list_themes()) or "нет"
+                raise AgenError(
+                    ErrorCode.NOT_FOUND,
+                    f"Шаблона оформления «{theme_id}» нет в папке данных (есть: {known})",
+                    hint="Загрузите его: agen theme import шаблон.pptx",
+                )
+            return self._theme(conn, row)
+
+    def _theme(self, conn: Connection, row: RowMapping) -> ThemeRecord:
+        ver = (
+            conn.execute(
+                select(theme_versions).where(
+                    theme_versions.c.theme_id == row["id"], theme_versions.c.number == row["current_version"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return ThemeRecord(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            version=row["current_version"],
+            current=_theme_version(ver),
+            created_at=_utc(row["created_at"]),
+        )
+
+    def next_theme_version(self, theme_id: str) -> int:
+        with self.engine.connect() as conn:
+            top = conn.execute(
+                select(func.max(theme_versions.c.number)).where(theme_versions.c.theme_id == theme_id)
+            ).scalar()
+        return int(top or 0) + 1
+
+    def add_theme_version(self, record: ThemeVersionRecord, name: str | None = None) -> ThemeRecord:
+        """Новая версия шаблона (``record.number`` — из ``next_theme_version``); первая
+        версия создаёт сам шаблон с именем ``name``."""
+        with self.engine.begin() as conn:
+            row = conn.execute(select(themes).where(themes.c.id == record.theme_id)).mappings().first()
+            if row is None:
+                conn.execute(
+                    insert(themes).values(
+                        id=record.theme_id,
+                        workspace_id=self.workspace,
+                        name=name or record.original_name,
+                        current_version=record.number,
+                        created_at=record.imported_at,
+                    )
+                )
+            else:
+                values: dict[str, Any] = {"current_version": record.number}
+                if name:
+                    values["name"] = name
+                conn.execute(update(themes).where(themes.c.id == record.theme_id).values(**values))
+            conn.execute(
+                insert(theme_versions).values(
+                    theme_id=record.theme_id,
+                    number=record.number,
+                    pptx_uri=record.pptx_uri,
+                    sha256=record.sha256,
+                    original_name=record.original_name,
+                    manifest=record.manifest.model_dump(mode="json"),
+                    roles=dict(record.roles),
+                    comment=record.comment,
+                    imported_at=record.imported_at,
+                )
+            )
+            row = conn.execute(select(themes).where(themes.c.id == record.theme_id)).mappings().one()
+            return self._theme(conn, row)
+
+    def theme_versions(self, theme_id: str) -> list[ThemeVersionRecord]:
+        self.get_theme(theme_id)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(theme_versions).where(theme_versions.c.theme_id == theme_id).order_by(theme_versions.c.number)
+            ).mappings()
+            return [_theme_version(r) for r in rows]
+
+    def get_theme_version(self, theme_id: str, number: int) -> ThemeVersionRecord:
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(theme_versions).where(
+                        theme_versions.c.theme_id == theme_id, theme_versions.c.number == number
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            self.get_theme(theme_id)
+            raise AgenError(ErrorCode.NOT_FOUND, f"У шаблона «{theme_id}» нет версии {number}")
+        return _theme_version(row)
+
+    def find_theme_versions(self, sha256: str) -> list[ThemeVersionRecord]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(theme_versions).where(theme_versions.c.sha256 == sha256).order_by(theme_versions.c.id)
+            ).mappings()
+            return [_theme_version(r) for r in rows]
+
+    def delete_theme(self, theme_id: str) -> None:
+        self.get_theme(theme_id)
+        with self.engine.begin() as conn:
+            conn.execute(delete(theme_versions).where(theme_versions.c.theme_id == theme_id))
+            conn.execute(delete(themes).where(themes.c.id == theme_id))
+
+    # --- запуски -----------------------------------------------------------------
+
+    def next_run_seq(self, scenario_id: str) -> int:
+        """Номер следующего запуска; номера удалённых запусков не повторяются."""
+        with self.engine.connect() as conn:
+            top = conn.execute(select(func.max(runs.c.seq)).where(runs.c.scenario_id == scenario_id)).scalar()
+            last = conn.execute(select(scenarios.c.last_run_seq).where(scenarios.c.id == scenario_id)).scalar()
+        return max(int(top or 0), int(last or 0)) + 1
+
+    def add_run(self, record: RunRecord) -> None:
+        seq = int(record.id.rsplit("-", 1)[1])
+        with self.engine.begin() as conn:
+            conn.execute(insert(runs).values(seq=seq, **_run_row(record)))
+            last = conn.execute(select(scenarios.c.last_run_seq).where(scenarios.c.id == record.scenario_id)).scalar()
+            if last is not None and seq > last:
+                conn.execute(update(scenarios).where(scenarios.c.id == record.scenario_id).values(last_run_seq=seq))
+
+    def update_run(self, run_id: str, **fields: Any) -> RunRecord:
+        rec = self.get_run(run_id).model_copy(update=fields)
+        row = _run_row(RunRecord.model_validate(rec.model_dump()))
+        with self.engine.begin() as conn:
+            conn.execute(update(runs).where(runs.c.id == run_id).values(**row))
+        return self.get_run(run_id)
+
+    def get_run(self, run_id: str) -> RunRecord:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
+        if row is None:
+            raise AgenError(ErrorCode.NOT_FOUND, f"Запуска «{run_id}» нет", hint="Список запусков: agen runs")
+        return _run(row)
+
+    def list_runs(self, scenario_id: str | None = None, limit: int | None = None) -> list[RunRecord]:
+        """Запуски, новые первыми."""
+        q = select(runs).order_by(runs.c.started_at.desc(), runs.c.seq.desc())
+        if scenario_id is not None:
+            q = q.where(runs.c.scenario_id == scenario_id)
+        if limit is not None:
+            q = q.limit(limit)
+        with self.engine.connect() as conn:
+            return [_run(r) for r in conn.execute(q).mappings()]
+
+    def delete_run(self, run_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(runs).where(runs.c.id == run_id))
+
+    def interrupt_running(self) -> list[str]:
+        """Запуски, которые остались «идут» после сбоя, помечаются прерванными (при старте)."""
+        with self.engine.begin() as conn:
+            ids = [r[0] for r in conn.execute(select(runs.c.id).where(runs.c.status == RunStatus.RUNNING.value))]
+            if ids:
+                conn.execute(
+                    update(runs)
+                    .where(runs.c.id.in_(ids))
+                    .values(status=RunStatus.INTERRUPTED.value, finished_at=_now())
+                )
+        return ids
+
+
+def _scenario_version(r: RowMapping) -> ScenarioVersionRecord:
+    return ScenarioVersionRecord(
+        scenario_id=r["scenario_id"],
+        number=r["number"],
+        spec=ScenarioSpec.model_validate(r["spec"]),
+        text=r["text"],
+        theme_id=r["theme_id"],
+        theme_version=r["theme_version"],
+        comment=r["comment"],
+        created_at=_utc(r["created_at"]),
+    )
+
+
+def _theme_version(r: RowMapping) -> ThemeVersionRecord:
+    return ThemeVersionRecord(
+        theme_id=r["theme_id"],
+        number=r["number"],
+        pptx_uri=r["pptx_uri"],
+        sha256=r["sha256"],
+        original_name=r["original_name"],
+        manifest=ThemeManifest.model_validate(r["manifest"]),
+        roles=r["roles"] or {},
+        comment=r["comment"],
+        imported_at=_utc(r["imported_at"]),
+    )
+
+
+def _run_row(r: RunRecord) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "scenario_id": r.scenario_id,
+        "scenario_version": r.scenario_version,
+        "scenario_name": r.scenario_name,
+        "theme_id": r.theme_id,
+        "theme_version": r.theme_version,
+        "period": r.period.model_dump(mode="json") if r.period else None,
+        "period_given": r.period_given,
+        "source_versions": dict(r.source_versions),
+        "inputs_history": {k: v.model_dump(mode="json") for k, v in r.inputs_history.items()},
+        "status": r.status.value,
+        "result": r.result.model_dump(mode="json") if r.result else None,
+        "output_uri": r.output_uri,
+        "output_copy": r.output_copy,
+        "trigger": r.trigger,
+        "started_at": r.started_at,
+        "finished_at": r.finished_at,
+    }
+
+
+def _run(r: RowMapping) -> RunRecord:
+    return RunRecord(
+        id=r["id"],
+        scenario_id=r["scenario_id"],
+        scenario_version=r["scenario_version"],
+        scenario_name=r["scenario_name"],
+        theme_id=r["theme_id"],
+        theme_version=r["theme_version"],
+        period=Period.model_validate(r["period"]) if r["period"] else None,
+        period_given=r["period_given"],
+        source_versions=r["source_versions"],
+        inputs_history={k: HistoryManifest.model_validate(v) for k, v in r["inputs_history"].items()},
+        status=RunStatus(r["status"]),
+        result=RunResult.model_validate(r["result"]) if r["result"] else None,
+        output_uri=r["output_uri"],
+        output_copy=r["output_copy"],
+        trigger=r["trigger"],
+        started_at=_utc(r["started_at"]),
+        finished_at=_utc(r["finished_at"]) if r["finished_at"] else None,
+    )
 
 
 def _pragmas(dbapi_conn: Any, _record: Any) -> None:

@@ -26,6 +26,9 @@ class RunRequest(BaseModel):
         description="id входа → манифест истории из папки данных; такие входы не читают файлы заново",
     )
     theme: str = Field(description="Путь к шаблону .pptx или .potx")
+    theme_roles: dict[str, str] = Field(
+        default_factory=dict, description="Подтверждённые роли макетов шаблона: роль → ключ макета (sldLayoutId)"
+    )
     period: Period | None = Field(None, description="Отчётный период; пусто — по основному входу")
     output: str | None = Field(None, description="Путь к .pptx; пусто — имя по сценарию в output_dir")
     output_dir: str | None = None
@@ -81,7 +84,20 @@ class IngestRequest(BaseModel):
     upload_seq: int
     out_dir: str = Field(description="Папка загрузки; пишется атомарно, после сбоя не остаётся половины")
     options: ReadOptions | None = Field(None, description="Параметры чтения поверх настроек источника")
-    required: list[str] = Field(default_factory=list, description="id столбцов, которые нужны сценариям")
+    required: list[str] | None = Field(
+        None,
+        description="id столбцов, которые нужны сценариям; None — неизвестно (источник не используют сценарии "
+        "из папки данных): тогда о каждом пропавшем столбце с вероятной заменой спрашивается подтверждение",
+    )
+    value_stats: dict[str, ColumnProfile] = Field(
+        default_factory=dict, description="Профиль столбцов прежних загрузок: по нему сравниваются значения кандидатов"
+    )
+    dependents: dict[str, list[str]] = Field(
+        default_factory=dict, description="id столбца → кто его использует: для объяснения, почему загрузка остановлена"
+    )
+    declined: list[str] = Field(
+        default_factory=list, description="id столбцов, которые пользователь решил оставить пустыми в этой загрузке"
+    )
     period: Period | None = Field(None, description="Период загрузки, заданный пользователем")
     history: HistoryManifest | None = Field(
         None, description="Текущая история источника: для предупреждений о пересечении периодов"
