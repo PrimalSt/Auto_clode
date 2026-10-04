@@ -1,5 +1,7 @@
 import { ActionIcon, Group, TextInput, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconFolderOpen } from "@tabler/icons-react";
+import { fileName } from "../format";
 import { useFileDrop, withExtensions } from "../shell";
 
 interface Props {
@@ -22,6 +24,8 @@ export function PathInput({ label, value, onChange, description, placeholder, fo
   const canPick = folder ? !!bridge?.pickFolder : !!bridge?.pickFiles;
   const drop = useFileDrop((paths) => {
     const ok = withExtensions(paths, extensions);
+    const message = dropMessage(paths, ok, extensions);
+    if (message) notifications.show({ color: "yellow", title: label, message });
     if (ok.length) onChange(ok[0]);
   }, !folder);
   const pick = async () => {
@@ -55,6 +59,19 @@ export function PathInput({ label, value, onChange, description, placeholder, fo
       )}
     </Group>
   );
+}
+
+/** Что сказать, если из перетащенных файлов поле взяло не все: не те расширения пропущены, а из
+ * нескольких подходящих взят первый (поле — для одного файла). */
+export function dropMessage(paths: string[], ok: string[], extensions?: string[]): string | null {
+  const parts: string[] = [];
+  const skipped = paths.filter((p) => !ok.includes(p));
+  if (skipped.length) {
+    const want = extensions?.length ? ` (нужен файл ${extensions.map((e) => "." + e.replace(/^\./, "")).join(", ")})` : "";
+    parts.push(`Пропущены${want}: ${skipped.map(fileName).join(", ")}`);
+  }
+  if (ok.length > 1) parts.push(`Поле принимает один файл: взят ${fileName(ok[0])}`);
+  return parts.length ? parts.join(". ") : null;
 }
 
 /** Несколько путей: по одному в строке (части одной выгрузки или несколько выгрузок). */

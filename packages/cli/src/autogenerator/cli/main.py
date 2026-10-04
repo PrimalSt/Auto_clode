@@ -472,7 +472,14 @@ def serve(
     origin: Annotated[
         list[str] | None, typer.Option("--origin", help="Origin интерфейса для CORS, например http://localhost:5173")
     ] = None,
-    dev: Annotated[bool, typer.Option("--dev", help="Режим разработчика: страница /docs")] = False,
+    dev: Annotated[
+        bool,
+        typer.Option(
+            "--dev",
+            help="Режим разработчика: /docs и /openapi.json без токена, проверка и применение изменённых "
+            "модулей (в копии исходников)",
+        ),
+    ] = False,
     open_ui: Annotated[
         bool, typer.Option("--open", help="Открыть окно приложения в браузере (если интерфейс собран)")
     ] = False,

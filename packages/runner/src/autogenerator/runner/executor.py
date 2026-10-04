@@ -16,7 +16,9 @@
 запускается через pythonw.exe: так у него точно нет консольного окна. Сервер оболочка запускает
 со скрытой консолью (``CREATE_NO_WINDOW``), её наследуют и дочерние python.exe; поэтому в
 окружении ``.venv`` (режим разработчика) исполнитель остаётся python.exe — pythonw.exe там лишь
-переадресует к настоящему Python, и завершение исполнителя не дошло бы до него.
+переадресует к настоящему Python, и завершение исполнителя не дошло бы до него. У pythonw.exe
+нет потоков вывода: печать модулей и предупреждения библиотек идут в файл ``AGEN_EXECUTOR_LOG``
+(сервер задаёт ``logs/executor-<имя>.log`` в папке данных), без него — в никуда.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ from autogenerator.contracts import AgenError, ErrorCode, ExecutorInfo, Progress
 
 POLL = 0.1
 """Как часто ждущий вызов проверяет процесс, таймаут и отмену (с)."""
+LOG_LIMIT = 5 << 20
+"""Журнал исполнителя больше этого (байт) при запуске процесса начинается заново (старый — ``.1``)."""
 
 
 def _portable(exc: BaseException) -> BaseException:
@@ -70,12 +74,26 @@ def windowless_executable() -> str | None:
     return str(exe) if exe.is_file() else None
 
 
+def _output_sink() -> Any:
+    """Куда писать вывод процесса без потоков вывода (pythonw): журнал ``AGEN_EXECUTOR_LOG`` или никуда."""
+    path = os.environ.get("AGEN_EXECUTOR_LOG")
+    if path:
+        log = Path(path)
+        with contextlib.suppress(OSError):
+            if log.stat().st_size > LOG_LIMIT:
+                log.replace(log.with_name(log.name + ".1"))
+        with contextlib.suppress(OSError):
+            # живёт, пока жив процесс; построчно — чтобы строки не терялись, если процесс завершат
+            return open(log, "a", encoding="utf-8", errors="replace", buffering=1)
+    return open(os.devnull, "w", encoding="utf-8")
+
+
 def _child(target: str, conn: Connection, cancel: Event, env: Mapping[str, str]) -> None:
     """Цикл процесса-исполнителя."""
     os.environ.update(env)
     if sys.stdout is None or sys.stderr is None:
         # pythonw: потоков вывода нет, а модули и библиотеки иногда печатают
-        sink = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 — живёт, пока жив процесс
+        sink = _output_sink()
         sys.stdout = sys.stdout or sink
         sys.stderr = sys.stderr or sink
     try:
