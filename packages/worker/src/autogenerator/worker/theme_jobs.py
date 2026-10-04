@@ -8,11 +8,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from autogenerator.contracts import AgenError, ErrorCode, ThemeManifest
 
-IMAGE_TIMEOUT = 120  # с
+IMAGE_TIMEOUT = 90  # с, сколько ждать PowerPoint
+LIBREOFFICE_TIMEOUT = 120  # с
+IMAGE_BUDGET = 150  # с, на всю картинку: PowerPoint, затем LibreOffice
+"""Меньше таймаута исполнителя превью (180 с): картинка останавливается в исполнителе, и
+запущенный ради неё PowerPoint закрывается, а не остаётся без хозяина."""
 
 
 def import_theme(
@@ -75,6 +80,11 @@ _POWERSHELL = (
     + r"""
 $running = @(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
 Invoke-Retry { $script:app = New-Object -ComObject PowerPoint.Application }
+if (-not $running) {
+    # PowerPoint запущен ради картинки: его номер — чтобы закрыть, если он зависнет.
+    $started = @(Get-Process POWERPNT -ErrorAction SilentlyContinue)
+    if ($started.Count -eq 1) { Set-Content -LiteralPath $env:AGEN_PID -Value $started[0].Id -Encoding ascii }
+}
 try {
     # Только чтение, без окна: если PowerPoint уже открыт, картинка рисуется в нём.
     Invoke-Retry { $script:pres = $app.Presentations.Open($env:AGEN_PPTX, -1, 0, 0) }
@@ -93,21 +103,56 @@ try {
 )
 
 
-def _powerpoint(pptx: Path, png: Path) -> bool:
+def _powerpoint(pptx: Path, png: Path, timeout: float = IMAGE_TIMEOUT) -> bool:
     if sys.platform != "win32" or shutil.which("powershell") is None:
         return False
-    env = {**os.environ, "AGEN_PPTX": str(pptx.resolve()), "AGEN_PNG": str(png.resolve())}
+    with tempfile.TemporaryDirectory(prefix="agen-ppt-") as tmp:
+        pid_file = Path(tmp, "powerpoint.pid")
+        env = {
+            **os.environ,
+            "AGEN_PPTX": str(pptx.resolve()),
+            "AGEN_PNG": str(png.resolve()),
+            "AGEN_PID": str(pid_file),
+        }
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", _POWERSHELL],
+                env=env,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # subprocess завершил только PowerShell: его finally с Quit() не выполнился
+            _end_powerpoint(pid_file)
+            return False
+        except OSError:
+            return False
+    return res.returncode == 0 and png.exists()
+
+
+def _end_powerpoint(pid_file: Path) -> bool:
+    """Завершить PowerPoint, который скрипт картинки запустил сам (номер — в ``pid_file``).
+    PowerPoint, открытый до этого у пользователя, скрипт номером не отмечает. Перед завершением
+    номер сверяется с именем процесса: номер мог достаться другой программе."""
     try:
-        res = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _POWERSHELL],
-            env=env,
+        pid = int(pid_file.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        found = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
-            timeout=IMAGE_TIMEOUT,
+            text=True,
+            timeout=15,
             check=False,
         )
+        if "powerpnt.exe" not in found.stdout.lower():
+            return False
+        done = subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=15, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return res.returncode == 0 and png.exists()
+    return done.returncode == 0
 
 
 def _soffice() -> str | None:
@@ -120,9 +165,9 @@ def _soffice() -> str | None:
     return None
 
 
-def _libreoffice(pptx: Path, png: Path) -> bool:
+def _libreoffice(pptx: Path, png: Path, timeout: float = LIBREOFFICE_TIMEOUT) -> bool:
     exe = _soffice()
-    if exe is None:
+    if exe is None or timeout <= 0:
         return False
     with tempfile.TemporaryDirectory(prefix="agen-lo-") as tmp:
         # Отдельный профиль: при открытом у пользователя LibreOffice преобразование иначе
@@ -141,7 +186,7 @@ def _libreoffice(pptx: Path, png: Path) -> bool:
                     str(pptx),
                 ],
                 capture_output=True,
-                timeout=IMAGE_TIMEOUT,
+                timeout=timeout,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -160,9 +205,10 @@ def slide_image(pptx: str | Path, png: str | Path) -> str | None:
     («приблизительно»: встроенные шрифты он не использует) или ``None`` для PowerPoint."""
     src, dst = Path(pptx), Path(png)
     dst.unlink(missing_ok=True)
+    deadline = time.monotonic() + IMAGE_BUDGET
     if _powerpoint(src, dst):
         return None
-    if _libreoffice(src, dst):
+    if _libreoffice(src, dst, min(LIBREOFFICE_TIMEOUT, deadline - time.monotonic())):
         return "приблизительно: картинку нарисовал LibreOffice, шрифты шаблона могут отличаться"
     raise AgenError(
         ErrorCode.RENDER_FAILED,

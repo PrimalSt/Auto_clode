@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, status
 
 from autogenerator.contracts import (
@@ -18,7 +16,17 @@ from autogenerator.contracts import (
 from autogenerator.home import ColumnUsage, Home, UploadOutcome
 
 from ..deps import HomeDep, StateDep, Wait, job_reply, period
-from ..models import HistoryOut, SourceDraftIn, SourceDraftOut, SourceIn, SourcesImportIn, UploadIn, UploadPatch
+from ..models import (
+    ColumnUsageOut,
+    HistoryOut,
+    SourceDraftIn,
+    SourceDraftOut,
+    SourceIn,
+    SourcesImportIn,
+    UploadIn,
+    UploadOut,
+    UploadPatch,
+)
 
 router = APIRouter(tags=["источники"])
 
@@ -91,10 +99,10 @@ def source_versions(source_id: str, home: HomeDep) -> list[SourceVersionRecord]:
 
 
 @router.get("/api/sources/{source_id}/usage")
-def column_usage(source_id: str, home: HomeDep) -> dict[str, Any]:
+def column_usage(source_id: str, home: HomeDep) -> ColumnUsageOut:
     """Какие столбцы источника нужны сохранённым сценариям и кому именно."""
     u: ColumnUsage = home.column_usage(source_id)
-    return {"required": u.required, "dependents": u.dependents}
+    return ColumnUsageOut(required=u.required, dependents=u.dependents)
 
 
 @router.get("/api/sources/{source_id}/history")
@@ -116,7 +124,7 @@ def add_upload(source_id: str, body: UploadIn, state: StateDep, wait: Wait = Non
     предупреждения и запомненные названия столбцов. Ошибка ``schema_review`` несёт в
     ``details.files`` сверку по файлам с кандидатами — для экрана сопоставления."""
 
-    def job(home: Home, ctx: JobContext) -> dict[str, Any]:
+    def job(home: Home, ctx: JobContext) -> UploadOut:
         out: UploadOutcome = home.upload(
             source_id,
             body.paths,
@@ -132,19 +140,16 @@ def add_upload(source_id: str, body: UploadIn, state: StateDep, wait: Wait = Non
             progress=ctx.progress_callback,
             cancelled=ctx.cancelled,
         )
-        return {
-            "record": out.record,
-            "issues": out.issues,
-            "remembered": out.remembered,
-            "reconcile": out.result.reconcile,
-        }
+        return UploadOut(
+            record=out.record, issues=out.issues, remembered=out.remembered, reconcile=out.result.reconcile
+        )
 
     names = " + ".join(p.replace("\\", "/").rsplit("/", 1)[-1] for p in body.paths)
     info = state.submit(
         "upload",
         job,
         title=f"Загрузка {names} в «{source_id}»",
-        changed=lambda r: [("uploads", source_id), *([("sources", source_id)] if r["remembered"] else [])],
+        changed=lambda r: [("uploads", source_id), *([("sources", source_id)] if r.remembered else [])],
     )
     return job_reply(state, info, wait)
 

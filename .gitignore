@@ -19,3 +19,4 @@ build/
 # собранный интерфейс (npm run build в frontend)
 packages/server/src/autogenerator/server/ui/
 frontend/node_modules/
+frontend/openapi.json

@@ -16,6 +16,23 @@ from .periods import PeriodUnit
 
 SPEC_VERSION = 1
 
+SHORT_FORM_KEY = "x-short"
+
+
+def short_form(schema: dict[str, Any]) -> dict[str, Any]:
+    """Короткая запись узла для редактора сценария: ``json_schema_extra`` модели или поля.
+
+    Модели сценария и параметров плагинов принимают короткие записи (``group_by: [region]``,
+    ``window: quarter_to_date``) через ``model_validator(mode="before")``, а JSON Schema модели
+    их не знает. Модель, которая разбирает короткую запись, объявляет её схему так::
+
+        model_config = ConfigDict(extra="forbid", json_schema_extra=short_form({"type": "string"}))
+
+    Схема сценария для редактора (сервер, ``/api/schemas/scenario``) превращает такой узел в
+    ``anyOf: [короткая запись, полная]``; проверка сценария от этого не меняется.
+    """
+    return {SHORT_FORM_KEY: schema}
+
 
 class _Extensible(BaseModel):
     """Узел, у которого кроме общих полей есть параметры плагина."""
@@ -50,6 +67,12 @@ class InputSpec(BaseModel):
 class WindowSpec(_Extensible):
     """Окно данных: какой отрезок истории берётся относительно отчётного периода."""
 
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra=short_form(
+            {"type": "string", "description": "quarter_to_date, last_n(6), range(2026-01-01, 2026-03-31)"}
+        ),
+    )
     type: str = "report_period"
 
     @model_validator(mode="before")
@@ -83,7 +106,7 @@ class WindowSpec(_Extensible):
 class GroupBySpec(BaseModel):
     """Группировка по столбцу; для столбца дат можно указать единицу («по месяцам»)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=short_form({"type": "string"}))
 
     column: str
     bucket: PeriodUnit | None = None
@@ -111,7 +134,10 @@ class AggregateSpec(BaseModel):
 
 
 class SortSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=short_form({"type": "string", "description": "Столбец; «-столбец» — по убыванию"}),
+    )
 
     column: str
     desc: bool = False
@@ -133,7 +159,9 @@ class CompareSpec(BaseModel):
     """Сравнение с другим периодом (F-305): то же окно, посчитанное за предыдущий отчётный
     период или за тот же период год назад. Короткая запись — имя: ``previous_period``."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra=short_form({"enum": ["previous_period", "same_period_last_year"]})
+    )
 
     window: Literal["previous_period", "same_period_last_year"]
     suffix: str | None = Field(None, description="Окончание новых столбцов и показателей: prev, ly, …")
@@ -343,7 +371,9 @@ class MetricSpec(BaseModel):
 class ShapeRef(BaseModel):
     """Фигура слайда-образца: адресуется по id (``cNvPr id``), имя — только подпись."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra=short_form({"type": "integer", "description": "id фигуры на слайде шаблона"})
+    )
 
     id: int = Field(description="id фигуры на слайде шаблона")
     label: str | None = None
@@ -368,7 +398,9 @@ class BlockSpec(_Extensible):
 
 
 class ExampleRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra=short_form({"type": "integer", "description": "sldId слайда шаблона"})
+    )
 
     id: int = Field(description="sldId слайда шаблона")
     label: str | None = None

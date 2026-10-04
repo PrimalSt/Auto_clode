@@ -36,6 +36,8 @@ dev = [
     "xlsxwriter>=3.2",
     # TestClient сервера (FastAPI) ходит через httpx.
     "httpx>=0.27",
+    # Схема сценария для редактора окна проверяется на примерах сценариев.
+    "jsonschema>=4.23",
 ]
 
 [tool.uv.workspace]

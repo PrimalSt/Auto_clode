@@ -368,6 +368,7 @@ class Home(LibraryMixin, RunsMixin, DraftsMixin, HomeBase):
                         + "), а правило пересечения для этой загрузки не выбрано",
                         hint="Укажите --overlap replace_period (заменить период), append (добавить), "
                         "merge_dedupe (объединить по ключам) или replace_all (заменить всё).",
+                        details={"period": res.period.key, "uploads": [self._brief(u) for u in res.overlaps]},
                     )
                 if chosen == OverlapPolicy.MERGE_DEDUPE and not spec.keys:
                     raise AgenError(
@@ -494,6 +495,11 @@ class Home(LibraryMixin, RunsMixin, DraftsMixin, HomeBase):
     def _label(self, upload_id: str) -> str:
         u = self.store.get_upload(upload_id)
         return f"#{u.seq} {u.period.key}"
+
+    def _brief(self, upload_id: str) -> dict[str, object]:
+        """Загрузка для ``details`` ошибки: окну не нужно разбирать текст сообщения."""
+        u = self.store.get_upload(upload_id)
+        return {"id": u.id, "seq": u.seq, "period": u.period.key, "rows": u.rows, "original_name": u.original_name}
 
     def set_upload_status(self, upload_id: str, status: UploadStatus) -> UploadRecord:
         """Исключить загрузку из истории, вернуть её или принять загрузку «на проверке»."""

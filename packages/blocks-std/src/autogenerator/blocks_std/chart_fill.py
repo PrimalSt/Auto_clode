@@ -59,27 +59,30 @@ from autogenerator.contracts import (
     PreviewKind,
     PreviewSpec,
     TemplateSlideInfo,
+    short_form,
 )
 
 from .chart import category_text
 from .chart_xml import check_chart, cleanup_points, set_label_formats, set_series_counts, theme_colors
 from .formats import SCALES, Scale
 from .label_bands import fix_slide_labels
-from .values import SCALE_ALIASES
+from .values import SCALE_ALIASES, SCALE_TEXT
 
 PIES = {"pie", "pie3D", "doughnut", "ofPie"}
 PERCENT_TOLERANCE = 0.02
 
 
 class FillSeries(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=short_form({"type": "string"}))
 
     column: str = Field(description="Столбец набора со значениями")
     name: str | None = Field(None, description="Название в легенде; пусто — id столбца")
     number_format: str | None = Field(
         None, description="Формат Excel для данных и подписей: #,##0, 0.0%, …; пусто — как у серии в шаблоне"
     )
-    scale: Scale | None = Field(None, description="Разделить значения: thousand, million, billion")
+    scale: Scale | None = Field(
+        None, description="Разделить значения: thousand, million, billion", json_schema_extra=SCALE_TEXT
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -103,11 +106,14 @@ class SeriesFrom(BaseModel):
         "name",
         description="Порядок серий: name — по названию, data — по первому появлению в наборе, список названий — "
         "сначала они, потом остальные по названию",
+        json_schema_extra=short_form({"type": "array", "items": {"type": ["string", "number"]}}),
     )
     number_format: str | None = Field(
         None, description="Формат Excel для данных и подписей всех серий; пусто — как у серий в шаблоне"
     )
-    scale: Scale | None = Field(None, description="Разделить значения: thousand, million, billion")
+    scale: Scale | None = Field(
+        None, description="Разделить значения: thousand, million, billion", json_schema_extra=SCALE_TEXT
+    )
 
     @field_validator("order", mode="before")
     @classmethod

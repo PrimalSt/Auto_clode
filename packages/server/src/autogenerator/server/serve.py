@@ -1,9 +1,10 @@
 """Запуск сервера: ``python -m autogenerator.server`` (так его запускают оболочка и ``agen serve``).
 
 Сервер слушает только ``127.0.0.1``; порт по умолчанию — случайный свободный. Когда сервер
-готов, он печатает строку ``AGEN_SERVER_READY {"port": …, "pid": …, "url": …}``: по ней оболочка
-узнаёт порт. Если не запустился — ``AGEN_SERVER_ERROR {"code": …, "message": …}`` и код выхода 3
-(например, папка данных уже открыта другим сервером).
+готов, он печатает строку ``AGEN_SERVER_READY {"port": …, "pid": …, "url": …, "ui": …}``: по ней
+оболочка узнаёт порт (``ui`` — собран ли интерфейс). Если не запустился —
+``AGEN_SERVER_ERROR {"code": …, "message": …, "hint": …}`` и код выхода 3 (``data_folder_locked`` —
+папка данных уже открыта другим сервером, ``port_busy`` — порт занят).
 
 Токен оболочка передаёт переменной ``AGEN_TOKEN``; без неё сервер создаёт свой. Для CLI сервер
 кладёт в папку данных ``server.json`` (порт и номер процесса) и ``cli.token`` (токен, файл
@@ -26,9 +27,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from autogenerator.contracts import AgenError
+from autogenerator.contracts import AgenError, ErrorCode
 
-from .app import create_app, openapi_schema
+from .app import create_app, has_ui, openapi_schema
 from .routes.system import app_version
 from .state import ServerState, Settings
 
@@ -44,8 +45,13 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--home", help="Папка данных (по умолчанию — AGEN_HOME или папка приложения)")
     p.add_argument("--port", type=int, default=0, help="Порт на 127.0.0.1 (0 — случайный свободный)")
     p.add_argument("--parent", type=int, help="Номер процесса оболочки: без него сервер останавливается")
-    p.add_argument("--origin", action="append", default=[], help="Origin окна для CORS (можно несколько)")
-    p.add_argument("--dev", action="store_true", help="Режим разработчика: /docs без токена")
+    p.add_argument(
+        "--origin",
+        action="append",
+        default=[],
+        help="Разрешить запросы из браузера со страницы этого адреса (CORS; окну не нужно); можно несколько",
+    )
+    p.add_argument("--dev", action="store_true", help="Режим разработчика: /docs и /openapi.json без токена")
     p.add_argument("--no-prestart", action="store_true", help="Запускать исполнители при первом задании")
     p.add_argument("--ui", help="Папка собранного интерфейса (по умолчанию — ui рядом с пакетом сервера)")
     p.add_argument("--openapi", metavar="ФАЙЛ", help="Записать схему OpenAPI в файл и выйти (папка данных не нужна)")
@@ -135,7 +141,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             sock.bind(("127.0.0.1", a.port))
         except OSError as e:
-            _say(ERROR, {"code": "port_busy", "message": f"Порт {a.port} на 127.0.0.1 занят: {e}"})
+            _say(
+                ERROR,
+                {
+                    "code": str(ErrorCode.PORT_BUSY),
+                    "message": f"Порт {a.port} на 127.0.0.1 занят: {e}",
+                    "hint": "Закройте программу, которая его заняла, или запустите сервер без --port (свободный порт).",
+                },
+            )
             return EXIT_START_FAILED
         port = sock.getsockname()[1]
         url = f"http://127.0.0.1:{port}"
@@ -165,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(0.05)
             if server.started:
                 logging.getLogger(__name__).info("Сервер готов: %s, папка данных %s", url, folder)
-                _say(READY, {"port": port, "pid": os.getpid(), "url": url})
+                _say(READY, {"port": port, "pid": os.getpid(), "url": url, "ui": has_ui(state)})
 
         threading.Thread(target=announce, daemon=True).start()
         server.run(sockets=[sock])

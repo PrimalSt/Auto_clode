@@ -182,7 +182,10 @@ class LocalJobQueue:
                 result = None
                 status = JobStatus.FAILED
                 error = JobError(
-                    code="internal", message=f"{type(e).__name__}: {e}", details={"traceback": traceback.format_exc()}
+                    code=str(ErrorCode.INTERNAL),
+                    message=f"{type(e).__name__}: {e}",
+                    hint="Это ошибка в коде приложения. Подробности — в журнале сервера (папка logs).",
+                    details={"traceback": traceback.format_exc()},
                 )
             finally:
                 _local.job = None

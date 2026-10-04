@@ -50,6 +50,10 @@ class ErrorCode(StrEnum):
     RENDER_FAILED = "render_failed"
     OUTPUT_BUSY = "output_busy"
     NOT_IMPLEMENTED = "not_implemented"
+    # Сервер приложения
+    PORT_BUSY = "port_busy"
+    INTERNAL = "internal"
+    """Непредвиденная ошибка в коде приложения (не в данных): подробности — в журнале."""
 
 
 class AgenError(Exception):

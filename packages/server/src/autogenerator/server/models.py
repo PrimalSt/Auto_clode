@@ -17,6 +17,8 @@ from autogenerator.contracts import (
     PeriodUnit,
     PluginManifest,
     ReadOptions,
+    ReconcileResult,
+    RunResult,
     ScenarioRecord,
     SchemaSnapshot,
     SourceSpec,
@@ -75,6 +77,15 @@ class UploadIn(BaseModel):
     profile: bool = True
 
 
+class UploadOut(BaseModel):
+    """Итог задания ``upload``."""
+
+    record: UploadRecord
+    issues: list[Issue] = Field(default_factory=list)
+    remembered: dict[str, str] = Field(default_factory=dict, description="Запомненные названия «в файле → id»")
+    reconcile: ReconcileResult
+
+
 class UploadPatch(BaseModel):
     """Изменить загрузку: принять, исключить из истории, вернуть (``status``), период, правило
     пересечения (``null`` — правило источника). Меняются только переданные поля."""
@@ -82,6 +93,13 @@ class UploadPatch(BaseModel):
     status: UploadStatus | None = None
     period: str | Period | None = None
     overlap_policy: OverlapPolicy | None = None
+
+
+class ColumnUsageOut(BaseModel):
+    """Какие столбцы источника нужны сохранённым сценариям."""
+
+    required: list[str] | None = Field(description="id нужных столбцов; null — источник не используют сценарии")
+    dependents: dict[str, list[str]] = Field(default_factory=dict, description="id столбца → кто его использует")
 
 
 class HistoryOut(BaseModel):
@@ -183,7 +201,7 @@ class SlidePreviewIn(DraftIn):
 
 class SlidePreviewOut(BaseModel):
     id: str
-    result: Any
+    result: RunResult
     files: dict[str, str] = Field(description="Файлы пробной сборки: pptx, png — пути API")
 
 

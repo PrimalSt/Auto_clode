@@ -53,7 +53,7 @@ def test_server_process(tmp_path: Path):
     try:
         info = ready(proc)
         url = str(info["url"])
-        assert url.startswith("http://127.0.0.1:")
+        assert url.startswith("http://127.0.0.1:") and isinstance(info["ui"], bool)
         # В Windows python.exe окружения .venv — пускач, а сервер — его дочерний процесс.
         pid = info["pid"]
         assert pid == proc.pid or (sys.platform == "win32" and sys.prefix != sys.base_prefix)
@@ -125,5 +125,6 @@ def test_busy_port_is_reported(tmp_path: Path):
         proc = start(tmp_path / "home", "--port", str(taken.getsockname()[1]))
         assert proc.stdout is not None
         tag, _, rest = first_line(proc.stdout).partition(" ")
-        assert tag == "AGEN_SERVER_ERROR" and json.loads(rest)["code"] == "port_busy"
+        err = json.loads(rest)
+        assert tag == "AGEN_SERVER_ERROR" and err["code"] == "port_busy" and "--port" in err["hint"]
         assert wait_exit(proc) == 3

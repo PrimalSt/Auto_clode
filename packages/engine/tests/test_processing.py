@@ -436,8 +436,13 @@ def test_lazy_code_and_large_data_go_through_duckdb(registry, hist, tmp_path):
         ],
         metrics=[{"id": "x", "input": "sales", "fn": "sum", "column": "x", "where": "pos = 1"}],
     )
+    from autogenerator.engine.usercode import ran_in_process
+
+    ran_in_process()
     res = go(spec, registry, hist, tmp_path, large_rows=1)
     assert res.metrics["x"] == 600.0
+    # код lazy выполнялся в этом процессе: исполнитель после такого задания перезапускается
+    assert ran_in_process() is True and ran_in_process() is False
 
 
 # --- граница истории, кэш -----------------------------------------------------------

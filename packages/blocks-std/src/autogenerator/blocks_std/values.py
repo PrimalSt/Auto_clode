@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from autogenerator.contracts import short_form
+
 from .formats import NBSP, SCALES, Scale, fmt_number
 
 SCALE_ALIASES = {
@@ -30,6 +32,8 @@ SCALE_ALIASES = {
     "млрд": "billion",
     "млрд.": "billion",
 }
+SCALE_TEXT = short_form({"enum": sorted(SCALE_ALIASES)})
+"""Масштаб в редакторе сценария: и полные имена, и сокращения («млн», «тыс.»)."""
 _HAS_PERCENT = re.compile(r"^\s*%")
 _HAS_POINTS = re.compile(r"^\s*п\.?\s*п", re.IGNORECASE)
 # Символы, недопустимые в XML 1.0, и управляющие: значение вставляется одной строкой.
@@ -42,7 +46,9 @@ class ValueFormat(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decimals: int | None = Field(None, ge=0, le=6, description="Знаков после запятой; пусто — 0, у процентов 1")
-    scale: Scale | None = Field(None, description="Масштаб: thousand (тыс.), million (млн), billion (млрд)")
+    scale: Scale | None = Field(
+        None, description="Масштаб: thousand (тыс.), million (млн), billion (млрд)", json_schema_extra=SCALE_TEXT
+    )
     sign: bool = Field(False, description="«+» у положительных")
     percent: bool = Field(False, description="Значение — доля: 0,125 → 12,5%")
     points: bool = Field(False, description="Значение — разница долей: 0,012 → 1,2 п.п.")

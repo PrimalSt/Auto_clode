@@ -54,6 +54,7 @@ from autogenerator.contracts import (
     PreviewKind,
     PreviewSpec,
     TemplateSlideInfo,
+    short_form,
 )
 from autogenerator.contracts.ooxml import A, MarkerMatch, P, iter_markers, iter_shapes, paragraph_segments
 
@@ -111,7 +112,10 @@ class MarkerColor(BaseModel):
     """Цвет значения метки по знаку, RGB; пусто — цвет шаблона. Короткая запись: ``sign`` —
     цвета по умолчанию, ``"1F4E79"`` — один цвет при любом знаке."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=short_form({"type": ["string", "number"], "description": "sign или цвет RRGGBB"}),
+    )
 
     positive: str | None = Field("2E7559", description="Цвет положительного значения; пусто — как в шаблоне")
     negative: str | None = Field("C00000", description="Цвет отрицательного значения; пусто — как в шаблоне")
@@ -146,7 +150,12 @@ class MarkerBinding(ValueFormat):
     """Привязка метки. Короткая запись — строка: ``period.month`` — переменная периода,
     иначе — id показателя."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=short_form(
+            {"type": ["string", "number"], "description": "id показателя, period.<переменная> или готовое значение"}
+        ),
+    )
 
     metric: str | None = None
     period: str | None = Field(None, description=f"Переменная периода: {', '.join(PERIOD_VARS)}")

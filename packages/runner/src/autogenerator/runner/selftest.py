@@ -76,3 +76,21 @@ def odd_error() -> None:
 def lock() -> threading.Lock:
     """Итог, который нельзя передать через pickle."""
     return threading.Lock()
+
+
+_dirty = False
+
+
+def dirty(fail: bool = False) -> int:
+    """Вызов, после которого модуль просит перезапустить процесс (как после кода пользователя)."""
+    global _dirty
+    _dirty = True
+    if fail:
+        raise AgenError(ErrorCode.USER_CODE, "ошибка в коде пользователя")
+    return os.getpid()
+
+
+def restart_requested() -> bool:
+    global _dirty
+    asked, _dirty = _dirty, False
+    return asked

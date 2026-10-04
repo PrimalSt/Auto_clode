@@ -52,6 +52,7 @@ from autogenerator.contracts import (
     PreviewKind,
     PreviewSpec,
     TemplateSlideInfo,
+    short_form,
 )
 from autogenerator.contracts.ooxml import A, P
 from autogenerator.contracts.theme import EMU_PER_INCH
@@ -140,6 +141,8 @@ class Heatmap(BaseModel):
 
 
 class TableColumn(ValueFormat):
+    model_config = ConfigDict(extra="forbid", json_schema_extra=short_form({"type": "string"}))
+
     column: str
     header: str | None = Field(None, description="Текст заголовка; пусто — id столбца")
     date_format: str = Field("LLL yyyy", description="Формат дат (Babel): «янв. 2026»")

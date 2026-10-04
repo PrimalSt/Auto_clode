@@ -2,9 +2,10 @@
 исполнителе (``runner.ProcessExecutor``), а сам сервер модули обработки не импортирует.
 
 Загрузки, сборка отчёта и импорт шаблона идут в исполнитель ``main`` (по одному, как и задания
-очереди ``main``); проверка сценария, превью и мелкие функции — в ``light``, чтобы окно
-отвечало, пока собирается отчёт. Вызов из задания очереди можно отменить: отмена задания
-останавливает и вызов исполнителя.
+очереди ``main``); превью узла и пробная сборка слайда — в ``preview``; проверка сценария,
+сохранение и мелкие функции — в ``light``. Так окно отвечает, пока собирается отчёт, а
+сохранение сценария не ждёт картинку слайда. Вызов из задания очереди можно отменить: отмена
+задания останавливает и вызов исполнителя.
 """
 
 from __future__ import annotations
@@ -39,11 +40,13 @@ from autogenerator.runner import current_job
 
 
 class RemoteWorker:
-    """``WorkerApi`` поверх двух исполнителей: ``main`` и ``light``."""
+    """``WorkerApi`` поверх исполнителей ``main``, ``light`` и ``preview`` (без ``preview`` превью
+    идут в ``light``)."""
 
-    def __init__(self, main: ExecutorBackend, light: ExecutorBackend):
+    def __init__(self, main: ExecutorBackend, light: ExecutorBackend, preview: ExecutorBackend | None = None):
         self.main = main
         self.light = light
+        self.preview_ex = preview if preview is not None else light
 
     def _call(self, ex: ExecutorBackend, fn: str, *args: Any, **kwargs: Any) -> Any:
         job = current_job()
@@ -136,10 +139,10 @@ class RemoteWorker:
 
     def run(self, req: RunRequest) -> RunResult:
         # пробная сборка одного слайда — превью: она не ждёт, пока соберётся отчёт
-        return self._call(self.light if req.slide is not None else self.main, "run", req)
+        return self._call(self.preview_ex if req.slide is not None else self.main, "run", req)
 
     def preview(self, req: PreviewRequest) -> PreviewResult:
-        return self._call(self.light, "preview", req)
+        return self._call(self.preview_ex, "preview", req)
 
     def plugin_manifest(self, isolated: bool = True) -> PluginManifest:
         # исполнитель — уже отдельный процесс: ещё один для обнаружения плагинов не нужен

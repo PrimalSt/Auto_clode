@@ -1,7 +1,7 @@
 """Превью черновика: проверка без данных, строки узла, пробная сборка слайда.
 
 Эндпоинты принимают несохранённый черновик, чтобы результат правок был виден до сохранения.
-Превью узла и слайда — задания очереди ``light`` и исполнителя превью: они не ждут, пока
+Превью узла и слайда — задания очереди ``preview`` и исполнителя ``preview``: они не ждут, пока
 собирается отчёт, а устаревшее превью окно отменяет (``POST /api/jobs/{id}/cancel``).
 """
 
@@ -39,7 +39,7 @@ def preview_node(body: NodePreviewIn, state: StateDep, wait: Wait = None) -> Job
         spec = draft(home, body.text, body.spec)
         return home.preview_node(spec, body.target, period=period(body.period), rows=body.rows, sample=body.sample)
 
-    return job_reply(state, state.submit("preview", job, lane="light", title=f"Превью {body.target}"), wait)
+    return job_reply(state, state.submit("preview", job, lane="preview", title=f"Превью {body.target}"), wait)
 
 
 @router.post("/api/preview/slide", status_code=status.HTTP_202_ACCEPTED)
@@ -54,7 +54,7 @@ def preview_slide(body: SlidePreviewIn, state: StateDep, wait: Wait = None) -> J
             files["png"] = f"/api/preview/files/{p.id}/slide.png"
         return SlidePreviewOut(id=p.id, result=p.result, files=files)
 
-    return job_reply(state, state.submit("preview_slide", job, lane="light", title=f"Слайд {body.slide}"), wait)
+    return job_reply(state, state.submit("preview_slide", job, lane="preview", title=f"Слайд {body.slide}"), wait)
 
 
 @router.get("/api/preview/files/{preview_id}/{name}", response_class=FileResponse)
