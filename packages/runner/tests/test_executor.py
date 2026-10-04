@@ -102,3 +102,17 @@ def test_restart_after_max_calls():
         assert ex.call("pid") != a
     finally:
         ex.close()
+
+
+def test_restart_when_module_asks(ex):
+    # После вызова с кодом пользователя модуль просит перезапуск: следующий вызов — в новом процессе,
+    # и он запущен заранее, в фоне. Обычные вызовы процесс не меняют.
+    first = ex.call("pid")
+    assert ex.call("pid") == first
+    assert ex.call("dirty") == first
+    second = ex.call("pid")
+    assert second != first and ex.info().restarts == 1
+    with pytest.raises(AgenError) as e:
+        ex.call("dirty", (True,))
+    assert e.value.code == ErrorCode.USER_CODE
+    assert ex.call("pid") not in (first, second) and ex.info().restarts == 2

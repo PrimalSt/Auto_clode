@@ -28,6 +28,7 @@ export function StepEditor({ spec, input: i, step: j, data }: { spec: ScenarioDr
         <IdField
           value={step.id ?? ""}
           taken={(input.pipeline ?? []).map((s) => s.id ?? "").filter((x) => x !== step.id)}
+          description="Имя шага в превью и журнале запуска; ссылок на шаг в сценарии нет"
           onCommit={(id) => edit((d) => setIn(d, [...path, "id"], id))}
         />
         <Switch

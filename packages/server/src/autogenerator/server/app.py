@@ -88,6 +88,7 @@ def _app(dev: bool) -> FastAPI:
         version=app_version(),
         summary="Локальный сервер приложения: источники, загрузки, сценарии, шаблоны, запуски",
         docs_url="/docs" if dev else None,
+        openapi_url="/openapi.json" if dev else None,  # схема для типов окна — `--openapi ФАЙЛ`
         redoc_url=None,
     )
     errors.install(app)
@@ -102,14 +103,19 @@ def openapi_schema() -> dict[str, Any]:
     return _app(dev=False).openapi()
 
 
+def has_ui(state: ServerState) -> bool:
+    """Собран ли интерфейс: тогда окно открывается по адресу сервера."""
+    return ((state.settings.ui or UI_DIR) / "index.html").is_file()
+
+
 def create_app(state: ServerState, *, dev: bool = False) -> FastAPI:
-    """Приложение поверх открытого состояния. ``dev`` — режим разработчика: страница ``/docs``.
+    """Приложение поверх открытого состояния. ``dev`` — режим разработчика: страницы ``/docs`` и
+    ``/openapi.json``.
     Если интерфейс собран (папка ``ui``), он открывается по адресу сервера."""
     app = _app(dev)
     app.state.agen = state
-    ui = state.settings.ui or UI_DIR
-    if (ui / "index.html").is_file():
-        app.mount("/", StaticFiles(directory=ui, html=True), name="ui")
+    if has_ui(state):
+        app.mount("/", StaticFiles(directory=state.settings.ui or UI_DIR, html=True), name="ui")
     app.add_middleware(TokenMiddleware, token=state.settings.token, hosts=state.settings.hosts, open_paths=OPEN_PATHS)
     if state.settings.origins:
         # снаружи токена: ответ 401 тоже с заголовками CORS, и окно видит ошибку, а не «CORS»

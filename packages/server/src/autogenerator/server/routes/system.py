@@ -92,8 +92,8 @@ def shutdown(state: StateDep) -> dict[str, bool]:
 
 @router.get("/api/modules")
 def modules(state: StateDep) -> ModulesOut:
-    """Исполнители и манифест модулей и плагинов (раздел «Модули»). Если исполнитель превью
-    не запустился, манифеста нет, а причина — в ``error`` и ``executors[].error``."""
+    """Исполнители и манифест модулей и плагинов (раздел «Модули»). Если исполнитель мелких
+    вызовов не запустился, манифеста нет, а причина — в ``error`` и ``executors[].error``."""
     return _modules(state)
 
 
@@ -108,7 +108,8 @@ def _modules(state: ServerState, refresh: bool = False) -> ModulesOut:
 
 @router.post("/api/modules/restart")
 def restart_executors(state: StateDep) -> ModulesOut:
-    """Перезапустить исполнители (режим разработчика: подхватить изменённый код модулей)."""
+    """Перезапустить исполнители: подхватить установленные или изменённые модули и плагины,
+    освободить зависший исполнитель. Работает в любом режиме, только когда нет заданий."""
     _idle(state, "перезапуск исполнителей")
     for ex in state.executors.values():
         ex.close()

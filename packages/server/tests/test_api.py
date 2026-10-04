@@ -46,7 +46,8 @@ def failed(job: dict[str, Any], code: str) -> dict[str, Any]:
 def test_system_and_errors(api: TestClient, state: ServerState):
     assert TestClient(create_app(state)).get("/api/system").status_code == 401
     info = api.get("/api/system").json()
-    assert info["home"] == str(state.home.folder.root) and {e["name"] for e in info["executors"]} == {"main", "light"}
+    assert info["home"] == str(state.home.folder.root)
+    assert {e["name"] for e in info["executors"]} == {"main", "light", "preview"}
     r = api.get("/api/sources/nope")
     assert r.status_code == 404 and r.json()["code"] == "not_found" and "nope" in r.json()["message"]
     r = api.post("/api/sources/x/uploads", json={"paths": []})
@@ -141,9 +142,9 @@ def test_themes_scenarios_runs_and_preview(api: TestClient, state: ServerState, 
     assert api.get(slide["files"]["pptx"]).content[:2] == b"PK"
     assert api.get(f"/api/preview/files/{slide['id']}/other.txt").status_code == 422
 
-    # Задания видны списком и по id; превью шли в очереди light.
+    # Задания видны списком и по id; превью шли в очереди preview.
     jobs = api.get("/api/jobs").json()
-    assert {j["lane"] for j in jobs if j["kind"].startswith("preview")} == {"light"}
+    assert {j["lane"] for j in jobs if j["kind"].startswith("preview")} == {"preview"}
     assert api.get(f"/api/jobs/{jobs[0]['id']}").json()["result"] is not None
 
     # Резервная копия и возврат к ней.

@@ -8,7 +8,9 @@
 Если процесс упал, вызов получает ошибку ``worker_failed``, а следующий вызов запускает
 процесс заново. Таймаут и отмена, которую исполнитель не заметил, завершают процесс.
 После ``max_calls`` вызовов процесс перезапускается, чтобы память и настройки библиотек не
-копились.
+копились. Модуль исполнителя может попросить перезапуск после вызова — функцией
+``restart_requested()`` (``autogenerator.worker``: в процессе выполнялся код пользователя); новый
+процесс тогда запускается сразу, в фоне.
 """
 
 from __future__ import annotations
@@ -41,6 +43,16 @@ def _portable(exc: BaseException) -> BaseException:
         return AgenError(ErrorCode.WORKER_FAILED, f"{type(exc).__name__}: {exc}")
 
 
+def _restart_requested(module: Any) -> bool:
+    check = getattr(module, "restart_requested", None)
+    if check is None:
+        return False
+    try:
+        return bool(check())
+    except Exception:
+        return True  # состояние процесса неизвестно: надёжнее начать заново
+
+
 def _child(target: str, conn: Connection, cancel: Event, env: Mapping[str, str]) -> None:
     """Цикл процесса-исполнителя."""
     os.environ.update(env)
@@ -71,14 +83,14 @@ def _child(target: str, conn: Connection, cancel: Event, env: Mapping[str, str])
         try:
             value = getattr(module, fn)(*args, **kwargs)
         except BaseException as e:
-            send(("error", call_id, _portable(e), traceback.format_exc()))
+            send(("error", call_id, _portable(e), traceback.format_exc(), _restart_requested(module)))
             continue
-        out: tuple[Any, ...] = ("ok", call_id, value)
+        out: tuple[Any, ...] = ("ok", call_id, value, _restart_requested(module))
         try:
             pickle.dumps(out)
         except Exception as e:
             err = AgenError(ErrorCode.WORKER_FAILED, f"Итог {fn} нельзя передать из исполнителя: {e}")
-            out = ("error", call_id, err, traceback.format_exc())
+            out = ("error", call_id, err, traceback.format_exc(), out[3])
         send(out)
 
 
@@ -114,6 +126,7 @@ class ProcessExecutor:
         self._started = 0
         self._error: str | None = None
         self._seq = 0
+        self._restart_after = False
 
     # --- процесс -------------------------------------------------------------------
 
@@ -231,6 +244,7 @@ class ProcessExecutor:
             assert self._conn is not None and self._cancel is not None
             conn, cancel = self._conn, self._cancel
             cancel.clear()
+            self._restart_after = False
             self._seq += 1
             call_id = self._seq
             flags = [k for k, v in (("progress", progress), ("cancelled", own)) if v is not None]
@@ -240,8 +254,14 @@ class ProcessExecutor:
             finally:
                 if self._proc is not None:
                     self._calls += 1
-                    if self.max_calls and self._calls >= self.max_calls:
+                    if self._restart_after or (self.max_calls and self._calls >= self.max_calls):
                         self._stop()
+                        if self._restart_after:
+                            threading.Thread(target=self._prestart, name=f"agen-start-{self.name}", daemon=True).start()
+
+    def _prestart(self) -> None:
+        with contextlib.suppress(AgenError):  # ошибка запуска видна в info() и придёт следующему вызову
+            self.start()
 
     def _wait(
         self,
@@ -267,8 +287,10 @@ class ProcessExecutor:
                         progress(msg[2])
                     continue
                 if msg[0] == "ok" and msg[1] == call_id:
+                    self._restart_after = bool(msg[3])
                     return msg[2]
                 if msg[0] == "error" and msg[1] == call_id:
+                    self._restart_after = bool(msg[4])
                     exc: BaseException = msg[2]
                     if not isinstance(exc, AgenError):
                         exc.add_note(f"Исполнитель «{self.name}»:\n{msg[3]}")

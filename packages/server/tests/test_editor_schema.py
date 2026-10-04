@@ -69,7 +69,7 @@ slides:
 
 @pytest.fixture(scope="module")
 def schema() -> dict:
-    from autogenerator import worker  # манифест плагинов — в процессе теста, как у исполнителя превью
+    from autogenerator import worker  # манифест плагинов — в процессе теста, как у исполнителя мелких вызовов
 
     return scenario_editor_schema(worker.plugin_manifest(False))
 
@@ -88,7 +88,7 @@ def test_schema_accepts_examples_and_short_forms(schema: dict) -> None:
     short = loads_yaml(SHORT)
     ScenarioSpec.model_validate(short)  # то же принимает и проверка сценария
     assert _errors(schema, short) == []
-    # без манифеста (исполнитель превью не запустился) — схема без параметров плагинов
+    # без манифеста (исполнитель мелких вызовов не запустился) — схема без параметров плагинов
     assert _errors(scenario_editor_schema(None), example) == []
 
 
@@ -100,4 +100,18 @@ def test_schema_knows_plugin_params(schema: dict) -> None:
     errors = _errors(schema, doc)
     assert len(errors) == 3, errors
     assert any("keepp" in e for e in errors)
+    assert "dedupe" in schema["$defs"]["StepSpec"]["properties"]["type"]["anyOf"][0]["enum"]
+
+
+def test_broken_params_schema_leaves_plugin_open() -> None:
+    from autogenerator import worker
+
+    manifest = worker.plugin_manifest(False)
+    for p in manifest.plugins:
+        if p.name in ("dedupe", "markers"):
+            p.params_schema = {"error": "схема не построилась"}
+    schema = scenario_editor_schema(manifest)
+    doc = loads_yaml(SHORT)
+    doc["inputs"][0]["pipeline"][0]["keepp"] = "last"  # параметры dedupe не проверяются
+    assert _errors(schema, doc) == []
     assert "dedupe" in schema["$defs"]["StepSpec"]["properties"]["type"]["anyOf"][0]["enum"]

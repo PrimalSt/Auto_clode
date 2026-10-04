@@ -19,6 +19,16 @@ from .tools import (
     suggest_id,
 )
 
+
+def restart_requested() -> bool:
+    """Перезапустить ли процесс-исполнитель после вызова: в нём выполнялся код пользователя
+    (``runner.ProcessExecutor`` спрашивает после каждого вызова)."""
+    import sys
+
+    usercode = sys.modules.get("autogenerator.engine.usercode")
+    return usercode is not None and bool(usercode.ran_in_process())
+
+
 __all__ = [
     "ManifestHistory",
     "check_file",
@@ -39,6 +49,7 @@ __all__ = [
     "output_path",
     "plugin_manifest",
     "preview",
+    "restart_requested",
     "rows_outside",
     "run",
     "scaffold_theme",

@@ -303,7 +303,22 @@ def scalar(v: Any) -> float | int | None:
     return f
 
 
+_ran_here = False
+
+
+def ran_in_process() -> bool:
+    """Выполнялся ли код пользователя в этом процессе (режим ``lazy``) с прошлого вопроса; отметка
+    сбрасывается. По ней исполнитель перезапускается после вызова (ARCHITECTURE.md, раздел 5.1):
+    код мог оставить свои импорты, глобальные настройки и потоки. Режимы ``table`` и ``batches``
+    идут в отдельном процессе и отметки не ставят."""
+    global _ran_here
+    ran, _ran_here = _ran_here, False
+    return ran
+
+
 def run_lazy(lf: pl.LazyFrame, code: str, node: str, ctx: UserContext, logs: list[str]) -> pl.LazyFrame:
+    global _ran_here
+    _ran_here = True
     fn = load_function(code, "transform", node)
     result = call(fn, (lf, ctx), node, logs)
     if isinstance(result, pl.DataFrame):

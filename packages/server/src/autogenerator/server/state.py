@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import secrets
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -30,7 +31,11 @@ from .workers import RemoteWorker
 MAIN_TIMEOUT = 30 * 60
 """Таймаут вызова исполнителя загрузок и запусков (с), раздел 6.6."""
 LIGHT_TIMEOUT = 180
-"""Таймаут вызова исполнителя превью (с): пробная сборка слайда с картинкой ждёт PowerPoint до 120 с."""
+"""Таймаут вызова исполнителя мелких вызовов (с): проверка сценария, манифест модулей."""
+PREVIEW_TIMEOUT = 180
+"""Таймаут вызова исполнителя превью (с): на картинку слайда исполнитель тратит не больше 150 с."""
+MANIFEST_RETRY = 30.0
+"""Через сколько секунд после ошибки снова пробовать получить манифест модулей (с)."""
 GATE_TIMEOUT = 10.0
 """Сколько восстановление базы ждёт, пока закончатся запросы (с)."""
 
@@ -42,13 +47,17 @@ class Settings:
     home: str | Path | None = None
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     origins: list[str] = field(default_factory=list)
-    """Origin окна оболочки (CORS); в режиме разработки — ещё адрес dev-сервера интерфейса."""
+    """Origin, которым разрешены запросы из браузера (CORS, ``--origin``): нужен только странице
+    с другого адреса, которая обращается к серверу напрямую. Окно оболочки и собранное окно
+    открываются с адреса сервера, а dev-сервер интерфейса (``npm run dev``) проксирует ``/api``,
+    поэтому им CORS не нужен. Пусто — CORS выключен."""
     hosts: list[str] = field(default_factory=lambda: ["127.0.0.1", "localhost"])
     """Допустимые заголовки Host: защита от подмены DNS (DNS rebinding)."""
     worker: str = "autogenerator.worker"
     """Модуль исполнителя, который процессы-исполнители импортируют по имени."""
     main_timeout: float | None = MAIN_TIMEOUT
     light_timeout: float | None = LIGHT_TIMEOUT
+    preview_timeout: float | None = PREVIEW_TIMEOUT
     prestart: bool = True
     """Запустить исполнители сразу (в фоне), чтобы первое задание не ждало импорта модулей."""
     ui: Path | None = None
@@ -122,6 +131,8 @@ class ServerState:
         self.shutdown: Callable[[], None] | None = None
         """Остановить сервер (задаёт тот, кто его запустил: ``__main__``)."""
         self._manifest: PluginManifest | None = None
+        self._manifest_error: tuple[float, AgenError] | None = None
+        self._manifest_lock = threading.Lock()
 
     @classmethod
     def open(cls, settings: Settings) -> ServerState:
@@ -129,11 +140,12 @@ class ServerState:
         executors = {
             "main": ProcessExecutor(settings.worker, "main", timeout=settings.main_timeout),
             "light": ProcessExecutor(settings.worker, "light", timeout=settings.light_timeout),
+            "preview": ProcessExecutor(settings.worker, "preview", timeout=settings.preview_timeout),
         }
-        worker = RemoteWorker(executors["main"], executors["light"])
+        worker = RemoteWorker(executors["main"], executors["light"], executors["preview"])
         home = Home.open(settings.home, write=True, worker=worker, owner="приложение Autogenerator")
         bus = LocalEventBus()
-        state = cls(settings, home, bus, LocalJobQueue(bus), executors)
+        state = cls(settings, home, bus, LocalJobQueue(bus, lanes=("main", "preview")), executors)
         if settings.prestart:
             for ex in executors.values():
                 threading.Thread(target=_prestart, args=(ex,), name=f"agen-start-{ex.name}", daemon=True).start()
@@ -174,11 +186,25 @@ class ServerState:
         self.bus.publish("changed", {"what": what, "id": ident})
 
     def plugin_manifest(self, refresh: bool = False) -> PluginManifest:
-        """Манифест модулей и плагинов из исполнителя превью; запоминается до перезапуска
-        исполнителей. Ошибку (исполнитель не запустился) не запоминает."""
-        if refresh or self._manifest is None:
-            self._manifest = self.home.worker.plugin_manifest()
-        return self._manifest
+        """Манифест модулей и плагинов из исполнителя мелких вызовов; запоминается до перезапуска
+        исполнителей (``refresh``: старый забывается, даже если новый не получен). Ошибку
+        (исполнитель не запустился) запоминает на ``MANIFEST_RETRY`` секунд, чтобы окно не
+        запускало исполнитель на каждый запрос."""
+        with self._manifest_lock:
+            if refresh:
+                self._manifest, self._manifest_error = None, None
+            if self._manifest is not None:
+                return self._manifest
+            if self._manifest_error is not None and time.monotonic() < self._manifest_error[0]:
+                e = self._manifest_error[1]
+                raise AgenError(e.code, e.message, details=e.details, hint=e.hint)
+            try:
+                self._manifest = self.home.worker.plugin_manifest()
+            except AgenError as e:
+                self._manifest_error = (time.monotonic() + MANIFEST_RETRY, e)
+                raise
+            self._manifest_error = None
+            return self._manifest
 
     def busy(self) -> bool:
         """Идут или ждут задания."""

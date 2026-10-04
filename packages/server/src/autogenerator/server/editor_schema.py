@@ -57,6 +57,14 @@ def _expand_short_forms(node: Any) -> Any:
     return out
 
 
+def _params(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Схема параметров плагина, если она построилась: у сломанной вместо неё ``{"error": …}``,
+    и параметры такого плагина редактор не проверяет."""
+    if not schema or not isinstance(schema.get("properties"), dict):
+        return None
+    return schema
+
+
 def _plugin_branches(base: dict[str, Any], kind: PluginKind, manifest: PluginManifest, defs: dict[str, Any], node: str):
     """Ветки ``if type == имя → then параметры`` и список имён для подсказки ``type``."""
     names: list[str] = []
@@ -65,9 +73,10 @@ def _plugin_branches(base: dict[str, Any], kind: PluginKind, manifest: PluginMan
         if p.kind != kind or p.status != PluginStatus.OK:
             continue
         names.append(p.name)
-        if p.params_schema is None:
+        schema = _params(p.params_schema)
+        if schema is None:
             continue
-        params = _embed(p.params_schema, f"{node}_{p.name}_", defs)
+        params = _embed(schema, f"{node}_{p.name}_", defs)
         props = {k: v for k, v in base["properties"].items() if k in COMMON[node]}
         props.update(params.get("properties", {}))
         then: dict[str, Any] = {"properties": props, "additionalProperties": False}
@@ -97,11 +106,12 @@ def scenario_editor_schema(manifest: PluginManifest | None = None) -> dict[str, 
             if branches:
                 base["allOf"] = branches
         markers = next(
-            (p for p in manifest.plugins if p.kind == PluginKind.BLOCK and p.name == "markers" and p.params_schema),
+            (_params(p.params_schema) for p in manifest.plugins if p.kind == PluginKind.BLOCK and p.name == "markers"),
             None,
         )
-        if markers is not None:
-            embedded = _embed(markers.params_schema or {}, "Marker_", defs)
+        bindings = (markers or {}).get("properties", {}).get("bindings", {})
+        if isinstance(bindings, dict) and isinstance(bindings.get("additionalProperties"), dict):
+            embedded = _embed(markers or {}, "Marker_", defs)
             binding = embedded["properties"]["bindings"]["additionalProperties"]
             for owner in (schema, defs["SlideSpec"]):
                 owner["properties"]["markers"]["additionalProperties"] = binding

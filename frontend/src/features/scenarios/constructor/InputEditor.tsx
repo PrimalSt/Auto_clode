@@ -1,8 +1,8 @@
 // Вход сценария: источник, основной вход и шаги обработки (с числом строк «было → стало»).
 import { ActionIcon, Badge, Button, Card, Group, Menu, Select, Stack, Switch, Table, Text, Title, Tooltip } from "@mantine/core";
-import { IconArrowDown, IconArrowUp, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconArrowDown, IconArrowUp, IconCopy, IconPlus, IconTrash } from "@tabler/icons-react";
 import { count } from "../../../shared/format";
-import { addIn, freeId, moveIn, setIn, useDraft, type ScenarioDraft } from "../draft";
+import { addIn, duplicateIn, freeId, moveIn, setIn, useDraft, type ScenarioDraft } from "../draft";
 import { pluginTitle, usePreviewSteps, type ConstructorData } from "./context";
 import { IdField } from "./IdField";
 import { renameRefs } from "./refs";
@@ -20,6 +20,13 @@ export function InputEditor({ spec, index, data }: { spec: ScenarioDraft; index:
     const id = freeId(type, ids);
     edit((d) => addIn(d, [...path, "pipeline"], { id, type }));
     select([...path, "pipeline", pipeline.length]);
+  };
+  const duplicateStep = (j: number) => {
+    let at = j + 1;
+    edit((d) => {
+      at = duplicateIn(d, [...path, "pipeline", j], ids);
+    });
+    select([...path, "pipeline", at]);
   };
   return (
     <Stack>
@@ -91,7 +98,7 @@ export function InputEditor({ spec, index, data }: { spec: ScenarioDraft; index:
                 <Table.Th w={40}>Вкл.</Table.Th>
                 <Table.Th>Шаг</Table.Th>
                 <Table.Th>Строк: было → стало</Table.Th>
-                <Table.Th w={100} />
+                <Table.Th w={124} />
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -141,6 +148,9 @@ export function InputEditor({ spec, index, data }: { spec: ScenarioDraft; index:
                         </ActionIcon>
                         <ActionIcon size="sm" variant="subtle" disabled={j === pipeline.length - 1} aria-label="Ниже" onClick={() => edit((d) => moveIn(d, [...path, "pipeline"], j, j + 1))}>
                           <IconArrowDown size={14} />
+                        </ActionIcon>
+                        <ActionIcon size="sm" variant="subtle" aria-label="Дублировать" onClick={() => duplicateStep(j)}>
+                          <IconCopy size={14} />
                         </ActionIcon>
                         <ActionIcon size="sm" variant="subtle" color="red" aria-label="Удалить" onClick={() => edit((d) => d.deleteIn([...path, "pipeline", j]))}>
                           <IconTrash size={14} />

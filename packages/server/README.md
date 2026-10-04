@@ -2,26 +2,32 @@
 
 REST API и поток событий для окна (ARCHITECTURE.md, разделы 6.8, 10 и 12). Сервер держит
 папку данных на запись, пока работает, и единственный пишет метаданные. Модули обработки и
-плагины он не импортирует: работу делают два процесса-исполнителя (`runner.ProcessExecutor`),
-`main` — загрузки, запуски, импорт шаблонов, `light` — проверка сценария, превью, мелкие
-вызовы. Ошибка в модуле обработки или плагине ломает вызов, а не сервер.
+плагины он не импортирует: работу делают три процесса-исполнителя (`runner.ProcessExecutor`):
+`main` — загрузки, запуски, импорт шаблонов; `preview` — превью узла и пробная сборка слайда;
+`light` — проверка и сохранение сценария, манифест модулей, мелкие вызовы (они не ждут ни
+отчёт, ни картинку слайда). Ошибка в модуле обработки или плагине ломает вызов, а не сервер.
+Исполнитель, в котором выполнялся код пользователя в режиме `lazy`, после вызова
+перезапускается.
 
 ## Запуск
 
 ```
 uv run agen serve --dev                    # сервер без окна; печатает токен и адрес
-python -m autogenerator.server --home D:\data --parent 1234 --origin http://tauri.localhost
+python -m autogenerator.server --home D:\data --parent 1234
 ```
 
 - Слушает только `127.0.0.1`, порт по умолчанию — случайный свободный (`--port`).
 - Когда готов, печатает `AGEN_SERVER_READY {"port": …, "pid": …, "url": …}`; если не
   запустился — `AGEN_SERVER_ERROR {"code": …, "message": …}` и код выхода 3 (например,
-  `data_folder_locked`: папку держит другой сервер или команда `agen`).
+  `data_folder_locked`: папку держит другой сервер или команда `agen`; `port_busy`: порт из
+  `--port` занят).
 - Токен — из переменной `AGEN_TOKEN` (её задаёт оболочка) или новый. В папке данных на время
   работы лежат `server.json` (порт, номер процесса) и `cli.token` (токен, только для
   текущего пользователя).
 - `--parent` — номер процесса оболочки: если он пропал, сервер останавливается сам.
-- `--origin` — origin окна для CORS; `--dev` — страница `/docs` без токена.
+- `--dev` — страницы `/docs` и `/openapi.json` без токена (вне режима разработчика их нет).
+- `--origin` — разрешить запросы из браузера со страницы другого адреса (CORS). Окну не нужен:
+  оно открывается с адреса сервера, а dev-сервер интерфейса проксирует `/api`.
 - Журнал — `logs/server.log` в папке данных.
 
 ## Доступ
@@ -49,7 +55,7 @@ python -m autogenerator.server --home D:\data --parent 1234 --origin http://taur
 | Сценарии | `GET/POST /api/scenarios`, `GET/PUT/DELETE /api/scenarios/{id}`, `…/versions`, `GET/PUT …/yaml`, `…/validate`, `…/copy` |
 | Запуски | `POST /api/scenarios/{id}/runs` (задание), `GET /api/runs`, `GET/DELETE /api/runs/{id}`, `…/output`, `POST …/rerun` (задание) |
 | Оформление | `GET/POST /api/themes` (задание), `GET/DELETE /api/themes/{id}`, `…/versions`, `…/versions/{n}`, `POST …/reimport` (задание), `PUT …/roles`, `POST …/export` |
-| Превью | `POST /api/preview/validate`, `POST /api/preview/node` и `/slide` (задания очереди `light`), `GET /api/preview/files/{id}/slide.pptx` и `slide.png` |
+| Превью | `POST /api/preview/validate`, `POST /api/preview/node` и `/slide` (задания очереди `preview`), `GET /api/preview/files/{id}/slide.pptx` и `slide.png` |
 | Задания и события | `GET /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/events` |
 
 Загрузка останавливается на выборе, если он нужен: `schema_review` (столбец пропал, в файле

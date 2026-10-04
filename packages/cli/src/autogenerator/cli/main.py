@@ -503,10 +503,17 @@ def serve(
         for line in proc.stdout:
             tag, _, rest = line.partition(" ")
             if tag == "AGEN_SERVER_READY":
-                url = json.loads(rest)["url"]
+                ready = json.loads(rest)
+                url = ready["url"]
                 typer.echo(f"Сервер работает: {url}" + (f" (документация API: {url}/docs)" if dev else ""))
                 typer.echo("Остановить: Ctrl+C")
-                if open_ui:
+                if open_ui and not ready.get("ui", True):
+                    typer.echo(
+                        "Окно не собрано, открывать нечего: `npm ci && npm run build` в папке frontend "
+                        "(или --ui с папкой собранного окна).",
+                        err=True,
+                    )
+                elif open_ui:
                     # токен — во фрагменте адреса: он не уходит на сервер и не попадает в журналы
                     webbrowser.open(f"{url}/#token={token}")
             elif tag == "AGEN_SERVER_ERROR":

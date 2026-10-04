@@ -77,6 +77,19 @@ describe("черновик сценария", () => {
     expect(next.inputs![1].pipeline).toEqual(next.inputs![0].pipeline);
   });
 
+  it("дублирует шаг обработки внутри входа", () => {
+    const { doc, spec } = parseDraft(example);
+    const steps = spec!.inputs![0].pipeline!;
+    let at = -1;
+    const out = applyEdit(example, doc, (d) => {
+      at = duplicateIn(d, ["inputs", 0, "pipeline", 0], steps.map((x) => x.id));
+    });
+    const next = parseDraft(out).spec!.inputs![0].pipeline!;
+    expect(at).toBe(1);
+    expect(next).toHaveLength(steps.length + 1);
+    expect(next[1]).toEqual({ ...steps[0], id: `${steps[0].id}_2` });
+  });
+
   it("несохранённые правки переживают закрытие окна, пока сохранённая версия та же", () => {
     const st = useDraft.getState();
     st.load("s1", "name: a\n");

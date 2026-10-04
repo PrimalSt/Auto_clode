@@ -32,6 +32,7 @@ STATUS = {
     ErrorCode.WORKER_FAILED: 502,
     ErrorCode.DISK_SPACE: 507,
     ErrorCode.NOT_IMPLEMENTED: 501,
+    ErrorCode.INTERNAL: 500,
 }
 """HTTP-статус по коду ошибки; остальные коды — 422 (запрос не выполнить с такими данными)."""
 
@@ -64,7 +65,7 @@ def install(app: FastAPI) -> None:
     async def internal(_: Request, e: Exception) -> JSONResponse:
         return JSONResponse(
             {
-                "code": "internal",
+                "code": str(ErrorCode.INTERNAL),
                 "message": f"Внутренняя ошибка сервера: {type(e).__name__}: {e}",
                 "hint": "Подробности — в журнале сервера (папка logs).",
                 "details": {"traceback": "".join(traceback.format_exception(e))},

@@ -100,6 +100,8 @@ def test_mapping_is_remembered_only_with_the_upload(home: Home, tmp_path: Path):
     with pytest.raises(AgenError) as e:
         home.upload("s", b, mapping={"Сумма заказа": "amount"})
     assert e.value.code == ErrorCode.OVERLAP_CHOICE
+    [prev] = e.value.details["uploads"]
+    assert e.value.details["period"] == "2026-01" and (prev["seq"], prev["original_name"]) == (1, "a.csv")
     assert home.source("s").version == 1 and home.source("s").spec.column("amount").aliases == []
     out = home.upload("s", b, mapping={"Сумма заказа": "amount"}, overlap_policy=OverlapPolicy.APPEND)
     assert out.remembered == {"Сумма заказа": "amount"} and out.record.source_version == 2

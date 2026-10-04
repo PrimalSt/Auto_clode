@@ -158,6 +158,13 @@ function Backups() {
   );
 }
 
+/** Исполнители сервера: название и что в них идёт. */
+const EXECUTORS: Record<string, [string, string]> = {
+  main: ["основной", "загрузки, отчёты, шаблоны"],
+  preview: ["превью", "превью узлов и слайдов"],
+  light: ["проверки", "проверка и сохранение сценария, мелкие вызовы"],
+};
+
 export default function ModulesPage() {
   const queryClient = useQueryClient();
   const modules = useModules();
@@ -256,10 +263,10 @@ export default function ModulesPage() {
               <Table.Tr key={ex.name}>
                 <Table.Td>
                   <Text size="sm" fw={500}>
-                    {ex.name === "main" ? "основной" : ex.name === "light" ? "превью" : ex.name}
+                    {EXECUTORS[ex.name]?.[0] ?? ex.name}
                   </Text>
                   <Text size="xs" c="dimmed">
-                    {ex.name === "main" ? "загрузки, отчёты, шаблоны" : "проверка, превью, мелкие вызовы"}
+                    {EXECUTORS[ex.name]?.[1] ?? ""}
                   </Text>
                 </Table.Td>
                 <Table.Td>

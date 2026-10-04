@@ -18,7 +18,7 @@ router = APIRouter(tags=["схемы"])
 @router.get("/api/schemas/{name}")
 def schema(name: Literal["scenario", "source"], state: StateDep) -> dict[str, Any]:
     """Схема сценария — с короткими записями и параметрами шагов, окон и блоков из манифеста
-    плагинов (если исполнитель превью не запустился — без параметров плагинов)."""
+    плагинов (если исполнитель мелких вызовов не запустился — без параметров плагинов)."""
     if name == "source":
         return SourceSpec.model_json_schema()
     try:
