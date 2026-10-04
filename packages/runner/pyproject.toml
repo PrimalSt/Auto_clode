@@ -1,0 +1,16 @@
+[project]
+name = "autogenerator-runner"
+version = "0.1.0"
+description = "Очередь заданий, поток событий и процессы-исполнители (локальные реализации)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "autogenerator-contracts",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "autogenerator.runner"

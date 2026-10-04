@@ -1,3 +1,8 @@
+import json
+import os
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 from pptx import Presentation
@@ -136,3 +141,28 @@ def test_template_acceptance_is_worker_only(tmp_path: Path):
     assert r.exit_code == 1 and "только у модуля worker" in r.output
     r = runner.invoke(app, ["test", "worker", "--template", str(tmp_path / "нет.pptx")])
     assert r.exit_code == 1 and "Шаблон не найден" in r.output
+
+
+def test_serve_starts_and_stops_the_server(tmp_path: Path):
+    home = tmp_path / "home"
+    env = {**os.environ, "AGEN_TOKEN": "cli-serve-token", "PYTHONUTF8": "1"}
+    code = "from autogenerator.cli.main import main; main()"
+    cmd = [sys.executable, "-c", code, "serve", "--home", str(home)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "Токен: cli-serve-token"
+        line = proc.stdout.readline()
+        assert line.startswith("Сервер работает: http://127.0.0.1:"), line
+        port = json.loads((home / "server.json").read_text(encoding="utf-8"))["port"]
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/system/shutdown",
+            method="POST",
+            headers={"Authorization": "Bearer cli-serve-token"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert r.status == 202
+        assert proc.wait(30) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()

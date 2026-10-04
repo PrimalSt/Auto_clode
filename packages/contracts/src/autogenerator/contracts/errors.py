@@ -43,6 +43,7 @@ class ErrorCode(StrEnum):
     NODE_FAILED = "node_failed"
     USER_CODE = "user_code"
     TIMEOUT = "timeout"
+    WORKER_FAILED = "worker_failed"
     # Оформление и сборка
     THEME_INVALID = "theme_invalid"
     LAYOUT_MISSING = "layout_missing"
@@ -71,6 +72,10 @@ class AgenError(Exception):
     def __str__(self) -> str:
         return self.message if not self.hint else f"{self.message}\n{self.hint}"
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        # исключение переходит из процесса-исполнителя в сервер через pickle
+        return (_restore, (str(self.code), self.message, self.details, self.hint))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "code": str(self.code),
@@ -78,3 +83,7 @@ class AgenError(Exception):
             "hint": self.hint,
             "details": self.details,
         }
+
+
+def _restore(code: str, message: str, details: dict[str, Any], hint: str | None) -> AgenError:
+    return AgenError(ErrorCode(code), message, details=details, hint=hint)

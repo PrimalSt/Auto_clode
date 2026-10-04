@@ -1,12 +1,13 @@
 """Команда ``agen`` (ARCHITECTURE.md, раздел 6.7).
 
 CLI вызывает движок напрямую через фасад ``api`` и сам пишет метаданные папки данных,
-взяв её блокировку. Когда появится сервер приложения (этап M4), при открытом приложении
-CLI будет работать через него.
+взяв её блокировку. Пока открыто приложение (его сервер держит папку данных), команды,
+которые пишут в папку данных, ждут его закрытия; ``agen serve`` запускает сам сервер.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -461,6 +462,63 @@ def test(
         target = str(pkg / "tests" / "test_template.py")
         env = {**os.environ, "AGEN_TEST_TEMPLATE": str(template.resolve())}
     code = subprocess.call([sys.executable, "-m", "pytest", target, *ctx.args], cwd=root, env=env)
+    raise typer.Exit(code)
+
+
+@app.command()
+def serve(
+    home: Annotated[Path | None, home_option] = None,
+    port: Annotated[int, typer.Option("--port", help="Порт на 127.0.0.1 (0 — случайный свободный)")] = 0,
+    origin: Annotated[
+        list[str] | None, typer.Option("--origin", help="Origin интерфейса для CORS, например http://localhost:5173")
+    ] = None,
+    dev: Annotated[bool, typer.Option("--dev", help="Режим разработчика: страница /docs")] = False,
+    open_ui: Annotated[
+        bool, typer.Option("--open", help="Открыть окно приложения в браузере (если интерфейс собран)")
+    ] = False,
+    ui: Annotated[Path | None, typer.Option("--ui", help="Папка собранного интерфейса")] = None,
+) -> None:
+    """Запустить сервер приложения без оболочки: для разработки интерфейса и проверки API.
+
+    Сервер держит папку данных, пока работает (Ctrl+C — остановить). Токен берётся из
+    переменной AGEN_TOKEN или создаётся новый; он печатается при запуске и лежит в файле
+    cli.token в папке данных. С --open окно открывается в браузере по адресу сервера."""
+    import secrets
+    import webbrowser
+
+    token = os.environ.get("AGEN_TOKEN") or secrets.token_urlsafe(32)
+    cmd = [sys.executable, "-m", "autogenerator.server", "--port", str(port)]
+    if home is not None:
+        cmd += ["--home", str(home)]
+    for o in origin or []:
+        cmd += ["--origin", o]
+    if dev:
+        cmd.append("--dev")
+    if ui is not None:
+        cmd += ["--ui", str(ui)]
+    typer.echo(f"Токен: {token}")
+    proc = subprocess.Popen(cmd, env={**os.environ, "AGEN_TOKEN": token}, stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            tag, _, rest = line.partition(" ")
+            if tag == "AGEN_SERVER_READY":
+                url = json.loads(rest)["url"]
+                typer.echo(f"Сервер работает: {url}" + (f" (документация API: {url}/docs)" if dev else ""))
+                typer.echo("Остановить: Ctrl+C")
+                if open_ui:
+                    # токен — во фрагменте адреса: он не уходит на сервер и не попадает в журналы
+                    webbrowser.open(f"{url}/#token={token}")
+            elif tag == "AGEN_SERVER_ERROR":
+                err = json.loads(rest)
+                typer.echo(f"Сервер не запустился: {err['message']}", err=True)
+                if err.get("hint"):
+                    typer.echo(err["hint"], err=True)
+            else:
+                typer.echo(line, nl=False)
+        code = proc.wait()
+    except KeyboardInterrupt:
+        code = proc.wait()
     raise typer.Exit(code)
 
 

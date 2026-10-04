@@ -3,6 +3,17 @@
 (``check_theme``, ``describe_theme``, ``scaffold_theme``) и папка данных ``Home`` (источники,
 загрузки, история, сопоставление столбцов, сценарии, шаблоны, запуски, резервные копии)."""
 
+from autogenerator.home import (
+    BackupInfo,
+    ChooseMapping,
+    ColumnUsage,
+    MappingChoice,
+    SavedScenario,
+    SlidePreview,
+    ThemeImport,
+    UploadOutcome,
+)
+
 from .facade import (
     check_theme,
     describe_theme,
@@ -17,9 +28,7 @@ from .facade import (
     scaffold_theme,
     validate,
 )
-from .home import ChooseMapping, ColumnUsage, Home, MappingChoice, UploadOutcome
-from .library import SavedScenario, ThemeImport
-from .runs import BackupInfo
+from .home import Home
 
 __all__ = [
     "BackupInfo",
@@ -28,6 +37,7 @@ __all__ = [
     "Home",
     "MappingChoice",
     "SavedScenario",
+    "SlidePreview",
     "ThemeImport",
     "UploadOutcome",
     "check_theme",

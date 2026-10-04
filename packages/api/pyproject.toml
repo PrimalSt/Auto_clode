@@ -8,6 +8,7 @@ dependencies = [
     "autogenerator-contracts",
     "autogenerator-worker",
     "autogenerator-storage",
+    "autogenerator-home",
 ]
 
 [build-system]

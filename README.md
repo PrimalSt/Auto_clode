@@ -168,6 +168,9 @@ tools/bench_run.py`, в CI — на Windows).
 | [blocks-std](packages/blocks-std) | плагины: текст, график, таблица, метки, заполнение готовых графиков и таблиц |
 | [render](packages/render) | сборка .pptx |
 | [worker](packages/worker) | соединяет модули в задания «загрузить файл» и «собрать отчёт» |
+| [home](packages/home) | папка данных: источники, загрузки, сценарии, шаблоны, запуски (без модулей обработки) |
+| [runner](packages/runner) | очередь заданий, поток событий, процессы-исполнители |
+| [server](packages/server) | локальный сервер для окна: REST API, задания, события (`agen serve`) |
 | [api](packages/api) | фасад для своего кода и Jupyter, папка данных |
 | [cli](packages/cli) | команда `agen` |
 
