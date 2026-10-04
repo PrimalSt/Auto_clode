@@ -18,6 +18,9 @@ jobs:
     name: Установщик Windows (сборка, тихая установка, самопроверка, удаление)
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # вывод Python в CI идёт в канал, а не в консоль: без UTF-8 кириллица не печатается (cp1252)
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
