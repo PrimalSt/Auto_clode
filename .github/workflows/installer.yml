@@ -145,10 +145,11 @@ jobs:
       - name: Удаление
         shell: pwsh
         run: |
-          # _?= — деинсталлятор работает на месте и не возвращается раньше времени
+          # _?= — деинсталлятор работает на месте и не возвращается раньше времени;
+          # поэтому себя он удалить не может (из «Приложений» Windows он запускается копией и удаляет)
           $p = Start-Process (Join-Path $env:AGEN_INSTALL "uninstall.exe") -ArgumentList "/S", "_?=$env:AGEN_INSTALL" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Деинсталлятор завершился с кодом $($p.ExitCode)" }
-          foreach ($gone in "autogenerator.exe", "python", "bin", "sdk", "uninstall.exe") {
+          foreach ($gone in "autogenerator.exe", "python", "bin", "sdk") {
             if (Test-Path (Join-Path $env:AGEN_INSTALL $gone)) { throw "Не удалено: $gone" }
           }
           # папка установки — она же папка данных: данные пользователя остаются
