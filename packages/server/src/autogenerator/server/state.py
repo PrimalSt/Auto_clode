@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from autogenerator.contracts import AgenError, ErrorCode, JobContext, JobInfo
+from autogenerator.contracts import AgenError, ErrorCode, JobContext, JobInfo, PluginManifest
 from autogenerator.home import Home
 from autogenerator.runner import LocalEventBus, LocalJobQueue, ProcessExecutor
 
@@ -121,6 +121,7 @@ class ServerState:
         self.started_at = datetime.now(UTC).replace(microsecond=0)
         self.shutdown: Callable[[], None] | None = None
         """Остановить сервер (задаёт тот, кто его запустил: ``__main__``)."""
+        self._manifest: PluginManifest | None = None
 
     @classmethod
     def open(cls, settings: Settings) -> ServerState:
@@ -171,6 +172,13 @@ class ServerState:
         """Событие для окна: данные раздела ``what`` (sources, uploads, scenarios, themes, runs,
         all) изменились — перечитать."""
         self.bus.publish("changed", {"what": what, "id": ident})
+
+    def plugin_manifest(self, refresh: bool = False) -> PluginManifest:
+        """Манифест модулей и плагинов из исполнителя превью; запоминается до перезапуска
+        исполнителей. Ошибку (исполнитель не запустился) не запоминает."""
+        if refresh or self._manifest is None:
+            self._manifest = self.home.worker.plugin_manifest()
+        return self._manifest
 
     def busy(self) -> bool:
         """Идут или ждут задания."""

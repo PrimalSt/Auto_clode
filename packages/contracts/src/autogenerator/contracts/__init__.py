@@ -71,6 +71,7 @@ from .runtime import (
     ServerEvent,
 )
 from .scenario import (
+    SHORT_FORM_KEY,
     SPEC_VERSION,
     AggregateSpec,
     BlockSpec,
@@ -87,6 +88,7 @@ from .scenario import (
     SortSpec,
     StepSpec,
     WindowSpec,
+    short_form,
 )
 from .snapshot import (
     CastIssue,
@@ -140,6 +142,7 @@ __all__ = [
     "DEFAULT_WORKSPACE",
     "ENTRY_POINT_GROUPS",
     "PLUGIN_API_VERSION",
+    "SHORT_FORM_KEY",
     "SPEC_VERSION",
     "AgenError",
     "AggregateSpec",
@@ -272,4 +275,5 @@ __all__ = [
     "ValueCount",
     "WindowPlugin",
     "WindowSpec",
+    "short_form",
 ]

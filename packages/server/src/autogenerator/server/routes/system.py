@@ -94,8 +94,12 @@ def shutdown(state: StateDep) -> dict[str, bool]:
 def modules(state: StateDep) -> ModulesOut:
     """Исполнители и манифест модулей и плагинов (раздел «Модули»). Если исполнитель превью
     не запустился, манифеста нет, а причина — в ``error`` и ``executors[].error``."""
+    return _modules(state)
+
+
+def _modules(state: ServerState, refresh: bool = False) -> ModulesOut:
     try:
-        manifest = state.home.worker.plugin_manifest()
+        manifest = state.plugin_manifest(refresh)
         error = None
     except AgenError as e:
         manifest, error = None, {"code": str(e.code), "message": e.message, "hint": e.hint}
@@ -108,7 +112,7 @@ def restart_executors(state: StateDep) -> ModulesOut:
     _idle(state, "перезапуск исполнителей")
     for ex in state.executors.values():
         ex.close()
-    return modules(state)
+    return _modules(state, refresh=True)
 
 
 @router.post("/api/modules/cache/clear")

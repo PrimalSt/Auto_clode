@@ -1,19 +1,28 @@
-"""JSON Schema моделей для редактора кода (Monaco проверяет и дополняет YAML по схеме)."""
+"""JSON Schema сценария и источника для редактора кода (Monaco проверяет и дополняет YAML по
+схеме) и для форм конструктора."""
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel
 
-from autogenerator.contracts import ScenarioSpec, SourceSpec
+from autogenerator.contracts import AgenError, SourceSpec
+
+from ..deps import StateDep
+from ..editor_schema import scenario_editor_schema
 
 router = APIRouter(tags=["схемы"])
 
-MODELS: dict[str, type[BaseModel]] = {"scenario": ScenarioSpec, "source": SourceSpec}
-
 
 @router.get("/api/schemas/{name}")
-def schema(name: Literal["scenario", "source"]) -> dict[str, Any]:
-    return MODELS[name].model_json_schema()
+def schema(name: Literal["scenario", "source"], state: StateDep) -> dict[str, Any]:
+    """Схема сценария — с короткими записями и параметрами шагов, окон и блоков из манифеста
+    плагинов (если исполнитель превью не запустился — без параметров плагинов)."""
+    if name == "source":
+        return SourceSpec.model_json_schema()
+    try:
+        manifest = state.plugin_manifest()
+    except AgenError:
+        manifest = None
+    return scenario_editor_schema(manifest)

@@ -10,7 +10,7 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Pt
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from autogenerator.contracts import BlockContext, BlockData, BlockPlugin, BlockTarget, DataNeeds
+from autogenerator.contracts import BlockContext, BlockData, BlockPlugin, BlockTarget, DataNeeds, short_form
 
 from .formats import fmt_date, fmt_money, fmt_number, fmt_percent
 
@@ -29,7 +29,7 @@ class CellFormat(BaseModel):
 
 
 class TableColumn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=short_form({"type": "string"}))
 
     column: str
     header: str | None = None
