@@ -8,11 +8,12 @@
 выбираются так (F-104, F-111): если лист не указан, в выгрузку входят первый лист с
 данными и все следующие листы с такой же шапкой — так учётные системы разбивают выгрузки
 больше миллиона строк. Листы читаются по очереди, в памяти один лист. Перед чтением .xlsx
-проверяется на zip-бомбу. Объединённые ячейки шапки — v1.
+(и .xlsb — тоже zip) проверяется на zip-бомбу. Объединённые ячейки шапки — v1.
 
-Тот же код читает и .xls: у читателя ``xls`` (``xls_reader.py``) свой только ``can_read``.
-Формат книги узнаётся по содержимому, а не по расширению и не по читателю: источник
-помнит читатель, а выгрузку могли пересохранить в другом формате.
+Тот же код читает .xls и .xlsb: у читателей ``xls`` (``xls_reader.py``) и ``xlsb``
+(``xlsb_reader.py``) свой только ``can_read``. Формат книги узнаётся по содержимому, а не
+по расширению и не по читателю: источник помнит читатель, а выгрузку могли пересохранить
+в другом формате.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ from .names import data_width, dedupe_names, detect_header_row
 from .xlsx_head import check_zip, head_rows, sheet_names
 
 HEAD_ROWS = 30
+SUFFIXES = {"xlsx": (".xlsx", ".xlsm"), "xlsb": (".xlsb",), "xls": (".xls",)}
+"""Расширения, по которым fastexcel узнаёт формат книги."""
 
 
 def _norm_header(cells: list[str | None]) -> list[str]:
@@ -49,6 +52,21 @@ def _norm_header(cells: list[str | None]) -> list[str]:
     return out
 
 
+def book_format(path: Path) -> str | None:
+    """Формат книги по содержимому: ``xlsx`` — zip с книгой в XML, ``xlsb`` — zip с
+    двоичной книгой (xl/workbook.bin), ``xls`` — не zip (книга ли это, скажет fastexcel),
+    ``None`` — zip без книги Excel (документ Word, архив с файлами)."""
+    if not zipfile.is_zipfile(path):
+        return "xls"
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+    if "xl/workbook.xml" in names:
+        return "xlsx"
+    if "xl/workbook.bin" in names:
+        return "xlsb"
+    return None
+
+
 class ExcelReader(ReaderPlugin):
     name = "xlsx"
     title = "Excel"
@@ -56,21 +74,28 @@ class ExcelReader(ReaderPlugin):
     sample_reads_all = True
 
     def can_read(self, path: Path) -> bool:
-        if not zipfile.is_zipfile(path):
-            return False
-        with zipfile.ZipFile(path) as z:
-            return "xl/workbook.xml" in z.namelist()
+        return book_format(path) == "xlsx"
 
-    # --- доступ к книге: .xlsx (zip) или .xls ---------------------------------------
-    # Первые строки .xlsx даёт потоковый разбор XML, .xls — сам fastexcel: XML в нём нет, а
-    # книга (не больше 65 536 строк на лист) всё равно целиком читается при открытии.
+    # --- доступ к книге: .xlsx, .xlsb (zip) или .xls ---------------------------------
+    # Первые строки .xlsx даёт потоковый разбор XML, .xlsb и .xls — сам fastexcel: XML в них
+    # нет. Книга .xls (не больше 65 536 строк на лист) всё равно целиком читается при
+    # открытии, а лист .xlsb ради первых строк читается целиком.
 
     def _check_file(self, path: Path) -> None:
         if zipfile.is_zipfile(path):
             check_zip(path)
 
     def _sheet_names(self, path: Path) -> list[str]:
-        if zipfile.is_zipfile(path):
+        fmt = book_format(path)
+        if fmt is None:
+            raise AgenError(
+                ErrorCode.FILE_FORMAT,
+                f"{path.name} не читается как книга Excel: это zip-архив без книги "
+                "(документ Word или PowerPoint, таблица .ods, архив с файлами)",
+                hint="Если в архиве выгрузка, распакуйте его и загрузите файл из архива; "
+                "таблицу .ods сохраните как .xlsx (Книга Excel).",
+            )
+        if fmt == "xlsx":
             return sheet_names(path)
         try:
             return self._open(path).sheet_names
@@ -78,15 +103,16 @@ class ExcelReader(ReaderPlugin):
             raise AgenError(ErrorCode.FILE_FORMAT, f"Не удалось открыть книгу {path.name}: {e}") from e
 
     def _head_rows(self, path: Path, sheet: str, n_rows: int) -> list[list[str | None]]:
-        if zipfile.is_zipfile(path):
+        if book_format(path) == "xlsx":
             return head_rows(path, sheet, n_rows)
         batch = self._read_sheet(path, sheet, n_rows)
         return [list(row) for row in zip(*(c.to_pylist() for c in batch.columns), strict=True)]
 
     def _open(self, path: Path) -> fastexcel.ExcelReader:
         # fastexcel выбирает формат книги по расширению. Если оно чужое (.xlsx, сохранённый
-        # как .xls, и наоборот), книга открывается из байтов: так формат узнаётся по содержимому.
-        if path.suffix.lower() in ((".xlsx", ".xlsm") if zipfile.is_zipfile(path) else (".xls",)):
+        # как .xls или .xlsb, и наоборот), книга открывается из байтов: так формат узнаётся
+        # по содержимому.
+        if path.suffix.lower() in SUFFIXES.get(book_format(path) or "", ()):
             return fastexcel.read_excel(str(path))
         return fastexcel.read_excel(path.read_bytes())
 

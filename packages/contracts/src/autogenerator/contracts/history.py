@@ -32,6 +32,11 @@ class UploadRef(BaseModel):
         description="Правило пересечения, выбранное для этой загрузки, когда у источника правило «ask»",
     )
     uploaded_at: datetime | None = None
+    file_columns: list[str] | None = Field(
+        None,
+        description="id столбцов источника, которые нашлись в файле загрузки (остальные в ней пустые); "
+        "None — неизвестно",
+    )
 
 
 class HistoryManifest(BaseModel):
@@ -122,6 +127,12 @@ class HistoryProvider(Protocol):
 
     def coverage(self, input_id: str) -> list[DateSpan]:
         """Покрытие входа загрузками: объединённые периоды загрузок по возрастанию."""
+        ...
+
+    def uploads(self, input_id: str, span: DateSpan) -> list[UploadRef]:
+        """Загрузки, строки которых входят в действующую историю входа за отрезок ``span``.
+        По их ``file_columns`` движок предупреждает о столбцах, которых не было в файле;
+        пустой список — загрузки неизвестны, и проверки нет."""
         ...
 
     def fingerprint(self, input_id: str) -> str | None:

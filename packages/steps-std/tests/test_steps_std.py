@@ -211,6 +211,7 @@ def test_sort_select_rename_cast():
     assert df.columns == ["date", "amount", "_upload_seq", "_row"]
     assert run(SelectStep(), drop=["order_no"]).columns == ["date", "amount", "_upload_seq", "_row"]
     assert run(RenameStep(), columns={"order_no": "order"}).columns[1] == "order"
+    assert RenameStep().columns_written(RenameStep().parse_params({"columns": {"order_no": "order"}})) == {"order"}
     with pytest.raises(Exception, match="переименовать нельзя"):
         run(RenameStep(), columns={"date": "d"})
     text = pl.LazyFrame(
@@ -244,6 +245,8 @@ def test_formula_and_schema():
 
     p = step.parse_params({"column": "net", "expr": "amount / 2"})
     assert step.output_schema(p, {"amount": DType.FLOAT}, Tools()) == {"amount": DType.FLOAT, "net": DType.FLOAT}
+    # Столбец формулы — результат шага, даже если в источнике есть столбец с таким id.
+    assert step.columns_written(p) == {"net"}
 
 
 PLAN = pl.DataFrame({"no": ["a", "b", "b", "z"], "target": [1.0, 2.0, 3.0, 4.0], "_row": [1, 2, 3, 4]})

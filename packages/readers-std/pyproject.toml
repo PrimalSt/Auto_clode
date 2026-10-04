@@ -14,6 +14,7 @@ dependencies = [
 csv = "autogenerator.readers_std.csv_reader:CsvReader"
 xlsx = "autogenerator.readers_std.excel_reader:ExcelReader"
 xls = "autogenerator.readers_std.xls_reader:XlsReader"
+xlsb = "autogenerator.readers_std.xlsb_reader:XlsbReader"
 
 [build-system]
 requires = ["uv_build>=0.8.17,<0.10"]

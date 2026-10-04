@@ -281,6 +281,7 @@ class SqliteMetadataStore:
                 original_name=u.original_name,
                 overlap_policy=u.overlap_policy,
                 uploaded_at=u.uploaded_at,
+                file_columns=sorted(set(u.mapping.values())) or None,
             )
             for u in self.list_uploads(source_id)
         ]

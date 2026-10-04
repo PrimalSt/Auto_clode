@@ -18,7 +18,7 @@ from .reading import inspect_file
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autogenerator.ingest")
     ap.add_argument("file")
-    ap.add_argument("--format", help="csv, xlsx или xls; по умолчанию — по файлу")
+    ap.add_argument("--format", help="csv, xlsx, xls или xlsb; по умолчанию — по файлу")
     ap.add_argument("--encoding")
     ap.add_argument("--delimiter")
     ap.add_argument("--no-quote", action="store_true", help="в CSV нет кавычек")

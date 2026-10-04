@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -84,6 +85,48 @@ def coverage(manifest: HistoryManifest) -> list[DateSpan]:
         else:
             merged.append([s, e])
     return [DateSpan(start=s, end_exclusive=e) for s, e in merged]
+
+
+def uploads_in(manifest: HistoryManifest, span: DateSpan) -> list[UploadRef]:
+    """Активные загрузки, строки которых входят в действующую историю за отрезок ``span``.
+
+    Считается по объявленным периодам, как ``coverage``: период загрузки пересекается с
+    отрезком и не заменён там целиком более поздними загрузками (``replace_period`` — за
+    свой период, ``replace_all`` — всё раньше себя). Строки, которые убирает
+    ``merge_dedupe``, известны только по данным: такая загрузка считается прочитанной.
+    """
+    active = manifest.active_uploads
+    rules: dict[str, OverlapPolicy] = {}
+    if manifest.overlap_policy != OverlapPolicy.MERGE_DEDUPE:
+        for i, up in enumerate(active):
+            try:
+                rules[up.id] = _rule(manifest, up, active[:i])
+            except AgenError:
+                rules[up.id] = OverlapPolicy.APPEND  # правило не выбрано: об этом скажет чтение истории
+        last_full = max((i for i, up in enumerate(active) if rules[up.id] == OverlapPolicy.REPLACE_ALL), default=0)
+        active = active[last_full:]
+    # От новых к старым: ``replaced`` — объединённые периоды более поздних загрузок с
+    # ``replace_period``; загрузка читается, если её часть в отрезке ими не закрыта целиком.
+    out: list[UploadRef] = []
+    replaced: list[tuple[date, date]] = []
+    for up in reversed(active):
+        start = up.period.start if span.start is None else max(up.period.start, span.start)
+        end = min(up.period.end_exclusive, span.end_exclusive)
+        i = bisect_right(replaced, start, key=lambda r: r[0]) - 1
+        if start < end and not (i >= 0 and replaced[i][1] >= end):
+            out.append(up)
+        if rules.get(up.id) == OverlapPolicy.REPLACE_PERIOD:
+            _add(replaced, up.period.start, up.period.end_exclusive)
+    return out[::-1]
+
+
+def _add(spans: list[tuple[date, date]], start: date, end: date) -> None:
+    """Добавить отрезок ``[start, end)`` к объединённым отрезкам ``spans`` (по возрастанию)."""
+    lo = bisect_left(spans, start, key=lambda r: r[1])
+    hi = bisect_right(spans, end, key=lambda r: r[0])
+    if lo < hi:
+        start, end = min(start, spans[lo][0]), max(end, spans[hi - 1][1])
+    spans[lo:hi] = [(start, end)]
 
 
 # --- Действующая история ----------------------------------------------------------------
