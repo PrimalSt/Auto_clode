@@ -11,6 +11,7 @@ import { JobProgress } from "../../shared/components/JobProgress";
 import { Page } from "../../shared/components/Page";
 import { PathInput } from "../../shared/components/PathInput";
 import { dateTime, fileName } from "../../shared/format";
+import { EXPORT_EXTENSIONS } from "../../shared/shell";
 import { ColumnsEditor } from "./ColumnsEditor";
 import { useSources } from "./queries";
 
@@ -78,7 +79,7 @@ function NewSource({ onClose }: { onClose: () => void }) {
             Приложение прочитает начало файла, определит столбцы, их типы и столбец с датами. Настройки можно поправить
             перед сохранением.
           </Text>
-          <PathInput label="Образец выгрузки" value={path} onChange={setPath} extensions={["csv", "xlsx", "xls", "xlsb"]} required />
+          <PathInput label="Образец выгрузки" value={path} onChange={setPath} extensions={EXPORT_EXTENSIONS} required />
           <Group grow>
             <TextInput label="Название" placeholder="Продажи из CRM" value={name} onChange={(e) => setName(e.currentTarget.value)} />
             <TextInput

@@ -1,0 +1,119 @@
+name: Установщик
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Установщик Windows (сборка, тихая установка, самопроверка, удаление)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # вывод Python в CI идёт в канал, а не в консоль: без UTF-8 кириллица не печатается (cp1252)
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            shell/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell
+
+      - name: Оболочка — формат, clippy, тесты
+        working-directory: shell
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Окно (интерфейс входит в пакет сервера)
+        working-directory: frontend
+        run: |
+          npm ci
+          npx vite build
+
+      - name: Python приложения по uv.lock
+        run: uv run --no-project python tools/build_bundle.py
+
+      - name: Установщик (Tauri, NSIS)
+        working-directory: shell
+        run: |
+          npm ci
+          npx tauri build --config tauri.bundle.conf.json
+
+      - name: Тихая установка
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem shell/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          "Установщик: $($setup.Name), $([math]::Round($setup.Length / 1MB)) МБ" >> $env:GITHUB_STEP_SUMMARY
+          $dir = Join-Path $env:RUNNER_TEMP "Autogenerator"
+          # /D= — последним и без кавычек (так требует NSIS)
+          $p = Start-Process $setup.FullName -ArgumentList "/S", "/D=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Установщик завершился с кодом $($p.ExitCode)" }
+          if (-not (Test-Path (Join-Path $dir "autogenerator.exe"))) { throw "Приложение не установилось в $dir" }
+          if (-not (Test-Path (Join-Path $dir "python\python.exe"))) { throw "Нет Python приложения" }
+          "AGEN_INSTALL=$dir" >> $env:GITHUB_ENV
+
+      - name: Самопроверка установленного приложения
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "self-test.txt"
+          $exe = Join-Path $env:AGEN_INSTALL "autogenerator.exe"
+          $p = Start-Process $exe -ArgumentList "--self-test", "--report", $report -Wait -PassThru
+          Get-Content $report -Encoding utf8
+          Get-Content $report -Encoding utf8 | ForEach-Object { "    $_" } >> $env:GITHUB_STEP_SUMMARY
+          if ($p.ExitCode -ne 0) { throw "Самопроверка: код $($p.ExitCode)" }
+
+      - name: agen и ядро Jupyter после установки
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:AGEN_INSTALL "bin"
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if (-not ($userPath -split ";" | Where-Object { $_.TrimEnd("\") -ieq $bin })) { throw "agen не добавлен в PATH пользователя" }
+          & (Join-Path $bin "agen.cmd") modules
+          if ($LASTEXITCODE -ne 0) { throw "agen modules: код $LASTEXITCODE" }
+          $kernel = Join-Path $env:APPDATA "jupyter\kernels\autogenerator\kernel.json"
+          if (-not (Test-Path $kernel)) { throw "Ядро Jupyter не зарегистрировано" }
+          $python = (Get-Content $kernel -Raw | ConvertFrom-Json).argv[0]
+          & $python -c "import ipykernel, autogenerator.api; print('ядро Jupyter: ok')"
+          if ($LASTEXITCODE -ne 0) { throw "Python ядра Jupyter не запускается" }
+
+      - name: Удаление
+        shell: pwsh
+        run: |
+          # _?= — деинсталлятор работает на месте и не возвращается раньше времени
+          $p = Start-Process (Join-Path $env:AGEN_INSTALL "uninstall.exe") -ArgumentList "/S", "_?=$env:AGEN_INSTALL" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Деинсталлятор завершился с кодом $($p.ExitCode)" }
+          if (Test-Path (Join-Path $env:AGEN_INSTALL "autogenerator.exe")) { throw "Приложение не удалено" }
+          $bin = Join-Path $env:AGEN_INSTALL "bin"
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if ($userPath -split ";" | Where-Object { $_.TrimEnd("\") -ieq $bin }) { throw "agen остался в PATH" }
+          if (Test-Path (Join-Path $env:APPDATA "jupyter\kernels\autogenerator")) { throw "Ядро Jupyter осталось" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autogenerator-setup
+          path: shell/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14

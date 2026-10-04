@@ -7,6 +7,7 @@ import { ErrorAlert } from "../../shared/components/ErrorAlert";
 import { Issues } from "../../shared/components/Issues";
 import { JobProgress } from "../../shared/components/JobProgress";
 import { splitPaths } from "../../shared/components/PathInput";
+import { EXPORT_EXTENSIONS, useFileDrop, withExtensions } from "../../shared/shell";
 import { fileName } from "../../shared/format";
 import { OVERLAP } from "../../shared/labels";
 import { MappingReview, type MappingDecision } from "./MappingReview";
@@ -38,6 +39,24 @@ export function UploadPanel({ source, onDone }: { source: SourceSpec; onDone?: (
   const [issues, setIssues] = useState<Issue[]>([]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [policy, setPolicy] = useState<string>("replace_period");
+
+  const add = (paths: string[]) => {
+    const known = new Set(splitPaths(text));
+    const fresh = paths.filter((p) => !known.has(p));
+    if (fresh.length) setText((t) => [...splitPaths(t), ...fresh].join("\n"));
+  };
+  const drop = useFileDrop((paths) => {
+    const ok = withExtensions(paths, EXPORT_EXTENSIONS);
+    if (ok.length < paths.length) {
+      notifications.show({ color: "yellow", message: `Не выгрузки, пропущены: ${paths.filter((p) => !ok.includes(p)).map(fileName).join(", ")}` });
+    }
+    add(ok);
+  }, !busy);
+  const bridge = window.__AGEN__;
+  const pick = async () => {
+    const paths = await bridge?.pickFiles?.({ title: "Файлы выгрузки", multiple: true, extensions: EXPORT_EXTENSIONS });
+    if (paths?.length) add(paths);
+  };
 
   const ask = (body: UploadIn, question: Question) =>
     new Promise<UploadIn | null>((resolve) => setPending({ body, question, resolve }));
@@ -113,12 +132,16 @@ export function UploadPanel({ source, onDone }: { source: SourceSpec; onDone?: (
     <Stack>
       <Textarea
         label="Файлы выгрузки"
-        description="Путь к файлу на этом компьютере, по одному в строке. Несколько файлов — несколько загрузок по порядку."
+        description={
+          "Путь к файлу на этом компьютере, по одному в строке. Несколько файлов — несколько загрузок по порядку." +
+          (drop.supported ? " Файлы можно перетащить в окно." : "")
+        }
         placeholder={"C:\\Выгрузки\\Продажи_2026-03.csv"}
         autosize
         minRows={2}
         value={text}
         onChange={(e) => setText(e.currentTarget.value)}
+        styles={drop.over ? { input: { borderColor: "var(--mantine-color-blue-6)", background: "var(--mantine-color-blue-light)" } } : undefined}
       />
       <Group align="flex-end">
         {splitPaths(text).length > 1 && (
@@ -132,6 +155,11 @@ export function UploadPanel({ source, onDone }: { source: SourceSpec; onDone?: (
           value={period}
           onChange={(e) => setPeriod(e.currentTarget.value.trim())}
         />
+        {bridge?.pickFiles && (
+          <Button variant="default" onClick={pick} disabled={busy}>
+            Выбрать файлы…
+          </Button>
+        )}
         <Button onClick={start} loading={busy} disabled={!splitPaths(text).length}>
           Загрузить
         </Button>

@@ -160,6 +160,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/modules/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Modules
+         * @description Режим разработчика: тесты изменённых модулей, и если прошли — исполнители с новым кодом
+         *     (задание; итог — ``ModulesCheckOut``).
+         */
+        post: operations["check_modules_api_modules_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/modules/cache/clear": {
         parameters: {
             query?: never;
@@ -1905,6 +1926,16 @@ export interface components {
             /** Compare */
             compare: components["schemas"]["CompareSpec"][];
         };
+        /** ModulesCheckIn */
+        ModulesCheckIn: {
+            /** Modules */
+            modules?: string[] | null;
+            /**
+             * Apply
+             * @default true
+             */
+            apply?: boolean;
+        };
         /** ModulesOut */
         ModulesOut: {
             /** Executors */
@@ -2947,6 +2978,13 @@ export interface components {
             jobs_active: number;
             /** Executors */
             executors: components["schemas"]["ExecutorInfo"][];
+            /**
+             * Dev
+             * @default false
+             */
+            dev: boolean;
+            /** Dev Source */
+            dev_source: string | null;
         };
         /**
          * TableInfo
@@ -3443,6 +3481,33 @@ export interface components {
              * @default null
              */
             dtype: components["schemas"]["DType"] | null;
+        };
+        /** ModuleCheck */
+        ModuleCheck: {
+            /** Module */
+            module: string;
+            /** Ok */
+            ok: boolean;
+            /** Seconds */
+            seconds: number;
+            /** Output */
+            output: string;
+        };
+        /** ModulesCheckOut */
+        ModulesCheckOut: {
+            /** Source */
+            source: string;
+            /** Modules */
+            modules: components["schemas"]["ModuleCheck"][];
+            /** Applied */
+            applied: boolean;
+            /** Restart App */
+            restart_app: boolean;
+            /**
+             * Note
+             * @default null
+             */
+            note: string | null;
         };
         /** PreviewColumn */
         PreviewColumn: {
@@ -3971,6 +4036,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModulesOut"];
+                };
+            };
+        };
+    };
+    check_modules_api_modules_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModulesCheckIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

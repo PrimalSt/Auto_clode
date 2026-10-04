@@ -39,6 +39,8 @@ dev = [
     # Схема сценария для редактора окна проверяется на примерах сценариев.
     "jsonschema>=4.23",
 ]
+# Только для установщика (tools/build_bundle.py): Python приложения — ещё и ядро Jupyter «Autogenerator».
+bundle = ["ipykernel>=6.29"]
 
 [tool.uv.workspace]
 members = ["packages/*"]

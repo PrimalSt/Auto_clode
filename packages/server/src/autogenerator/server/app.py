@@ -19,6 +19,7 @@ from autogenerator.contracts import PreviewResult, ReconcileResult, RunRecord
 
 from . import errors
 from .auth import OPEN_PATHS, TokenMiddleware
+from .devmode import ModulesCheckOut
 from .models import SlidePreviewOut, SourceDraftOut, ThemeImportOut, UploadOut
 from .routes import ROUTERS
 from .routes.system import app_version
@@ -36,6 +37,7 @@ JOB_RESULTS: list[type[BaseModel]] = [
     RunRecord,
     PreviewResult,
     SlidePreviewOut,
+    ModulesCheckOut,
 ]
 """Итоги заданий (``JobInfo.result``) и сверка из ошибки ``schema_review``: в схеме OpenAPI их
 нет среди ответов, а интерфейсу нужны их типы."""

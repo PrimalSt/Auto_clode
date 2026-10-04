@@ -1,4 +1,5 @@
-// Модули: исполнители, модули и плагины с их состоянием, кэш, резервные копии.
+// Модули: исполнители, модули и плагины с их состоянием, кэш, резервные копии; в окне оболочки —
+// папка данных и режим разработчика.
 import { Alert, Badge, Button, Card, Code, Group, SimpleGrid, Stack, Table, Tabs, Text, Tooltip } from "@mantine/core";
 import { modals } from "@mantine/modals";
 import { notifications } from "@mantine/notifications";
@@ -8,6 +9,7 @@ import { useModules, type PluginInfo } from "../../shared/api/modules";
 import { ErrorAlert } from "../../shared/components/ErrorAlert";
 import { Page } from "../../shared/components/Page";
 import { bytes, dateTime } from "../../shared/format";
+import { AppSettings } from "./AppSettings";
 
 const KINDS: Record<string, string> = {
   reader: "Чтение файлов",
@@ -240,6 +242,7 @@ export default function ModulesPage() {
           </Card>
         </SimpleGrid>
       )}
+      {sys && <AppSettings sys={sys} />}
       {sys?.warnings.map((w, i) => (
         <Alert key={i} color="yellow">
           {w}
