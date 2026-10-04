@@ -1,5 +1,6 @@
 import { ActionIcon, Group, TextInput, Tooltip } from "@mantine/core";
 import { IconFolderOpen } from "@tabler/icons-react";
+import { useFileDrop, withExtensions } from "../shell";
 
 interface Props {
   label: string;
@@ -13,11 +14,16 @@ interface Props {
   error?: string | null;
 }
 
-/** Путь к файлу или папке на этом компьютере. В окне оболочки — кнопка с системным диалогом;
- * в браузере путь вводится текстом (браузер не отдаёт пути выбранных файлов). */
+/** Путь к файлу или папке на этом компьютере. В окне оболочки — кнопка с системным диалогом,
+ * а файл можно перетащить в окно; в браузере путь вводится текстом (браузер не отдаёт пути
+ * выбранных файлов). */
 export function PathInput({ label, value, onChange, description, placeholder, folder, extensions, required, error }: Props) {
   const bridge = window.__AGEN__;
   const canPick = folder ? !!bridge?.pickFolder : !!bridge?.pickFiles;
+  const drop = useFileDrop((paths) => {
+    const ok = withExtensions(paths, extensions);
+    if (ok.length) onChange(ok[0]);
+  }, !folder);
   const pick = async () => {
     if (folder) {
       const p = await bridge?.pickFolder?.({ title: label });
@@ -38,6 +44,7 @@ export function PathInput({ label, value, onChange, description, placeholder, fo
         onChange={(e) => onChange(e.currentTarget.value)}
         required={required}
         error={error}
+        styles={drop.over ? { input: { borderColor: "var(--mantine-color-blue-6)", background: "var(--mantine-color-blue-light)" } } : undefined}
       />
       {canPick && (
         <Tooltip label="Выбрать">

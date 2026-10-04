@@ -218,6 +218,10 @@ class SystemOut(BaseModel):
     warnings: list[str]
     jobs_active: int
     executors: list[ExecutorInfo]
+    dev: bool = False
+    """Режим разработчика (сервер запущен с ``--dev``)."""
+    dev_source: str | None = None
+    """Копия исходников, из которой запущен сервер (режим разработчика), иначе None."""
 
 
 class BackupIn(BaseModel):
@@ -239,3 +243,11 @@ class ModulesOut(BaseModel):
     executors: list[ExecutorInfo]
     plugins: PluginManifest | None = None
     error: dict[str, Any] | None = Field(None, description="Почему манифест модулей не получен")
+
+
+class ModulesCheckIn(BaseModel):
+    modules: list[str] | None = None
+    """Какие модули проверить (папки ``packages/*``); по умолчанию — изменённые после запуска
+    сервера или прошлого применения."""
+    apply: bool = True
+    """Если тесты прошли — перезапустить исполнители с новым кодом."""

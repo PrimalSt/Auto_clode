@@ -25,10 +25,14 @@ python -m autogenerator.server --home D:\data --parent 1234
   работы лежат `server.json` (порт, номер процесса) и `cli.token` (токен, только для
   текущего пользователя).
 - `--parent` — номер процесса оболочки: если он пропал, сервер останавливается сам.
-- `--dev` — страницы `/docs` и `/openapi.json` без токена (вне режима разработчика их нет).
+- `--dev` — режим разработчика: страницы `/docs` и `/openapi.json` без токена (вне режима
+  разработчика их нет) и проверка изменённых модулей (ниже).
 - `--origin` — разрешить запросы из браузера со страницы другого адреса (CORS). Окну не нужен:
   оно открывается с адреса сервера, а dev-сервер интерфейса проксирует `/api`.
 - Журнал — `logs/server.log` в папке данных.
+- `AGEN_WINDOWLESS=1` (задаёт оболочка): в Windows исполнители установленного приложения
+  запускаются через `pythonw.exe`, а тесты модулей — без окна, чтобы у программы без консоли
+  не всплывали консольные окна.
 
 ## Доступ
 
@@ -49,7 +53,7 @@ python -m autogenerator.server --home D:\data --parent 1234
 | Раздел | Пути |
 |---|---|
 | Система | `GET /api/health`, `GET /api/system`, `POST /api/system/backup`, `GET /api/system/backups`, `POST /api/system/restore`, `POST /api/system/shutdown` |
-| Модули | `GET /api/modules`, `POST /api/modules/restart`, `POST /api/modules/cache/clear` |
+| Модули | `GET /api/modules`, `POST /api/modules/restart`, `POST /api/modules/check` (задание, режим разработчика), `POST /api/modules/cache/clear` |
 | Источники | `GET/POST /api/sources`, `POST /api/sources/draft` (задание), `POST /api/sources/import`, `GET/PUT/DELETE /api/sources/{id}`, `…/versions`, `…/usage`, `…/history` |
 | Загрузки | `GET/POST /api/sources/{id}/uploads` (задание), `GET/PATCH/DELETE /api/uploads/{id}` |
 | Сценарии | `GET/POST /api/scenarios`, `GET/PUT/DELETE /api/scenarios/{id}`, `…/versions`, `GET/PUT …/yaml`, `…/validate`, `…/copy` |
@@ -67,6 +71,14 @@ python -m autogenerator.server --home D:\data --parent 1234
 (без самого итога), `changed` — данные раздела изменились (`{"what": "sources" | "uploads" |
 "scenarios" | "themes" | "runs" | "all", "id": …}`). После переподключения окно получает
 пропущенные события (заголовок `Last-Event-ID` или `?after=`).
+
+**Режим разработчика** (`--dev`, сервер установлен из копии исходников через `uv sync`):
+`POST /api/modules/check` с `{"modules": [...]}` или `{}` — тесты модулей (`packages/<модуль>/tests`,
+по умолчанию — модулей, в коде которых есть файлы новее запуска сервера или прошлого
+применения). Если все прошли, исполнители перезапускаются и считают с новым кодом
+(`applied`); если идут задания, новый код не применяется (`note`). Модули самого сервера
+(`contracts`, `storage`, `home`, `runner`, `server`) начинают работать после перезапуска
+приложения (`restart_app`). Итог — `ModulesCheckOut`. Вне режима разработчика — `501`.
 
 Окно сохраняет сценарий только с id шаблона из папки данных: шаблон загружается в разделе
 «Оформление» (`POST /api/themes`).

@@ -21,16 +21,48 @@ export type ReconcileResult = Schemas["ReconcileResult"];
 export type MappingCandidate = Schemas["MappingCandidate"];
 export type PreviewResult = Schemas["PreviewResult"];
 
-/** То, что окну передаёт оболочка (Tauri, часть 4): адрес сервера, токен и мост к системе. */
+/** Настройки запуска, которые хранит оболочка (`shell.json` в папке настроек пользователя). */
+export interface ShellSettings {
+  version: string;
+  home: string;
+  default_home: string;
+  custom_home: boolean;
+  /** Режим разработчика: копия исходников, из которой запускается сервер. */
+  dev_source: string | null;
+  last_good: { home: string | null; dev_source: string | null } | null;
+  can_use_last_good: boolean;
+  /** Предел памяти одного процесса (байты; 0 — нет предела). */
+  memory_limit: number;
+  config: string;
+}
+
+/** То, что окну передаёт оболочка (Tauri): токен и мост к системе. Окно оболочки открыто на адресе
+ * сервера, поэтому `url` не нужен; в браузере (`agen serve --open`) моста нет. */
 export interface ShellBridge {
+  shell?: boolean;
+  version?: string;
   url?: string;
   token?: string;
   /** Нативный выбор файлов: пути к файлам на этом компьютере или null (отмена). */
   pickFiles?: (opts: { title?: string; multiple?: boolean; extensions?: string[] }) => Promise<string[] | null>;
   /** Нативный выбор папки. */
   pickFolder?: (opts: { title?: string }) => Promise<string | null>;
-  /** Открыть файл программой по умолчанию (готовый отчёт — в PowerPoint). */
+  /** Открыть файл программой по умолчанию (готовый отчёт — в PowerPoint) или папку в проводнике. */
   openPath?: (path: string) => Promise<void>;
+  /** Показать файл в проводнике. */
+  revealPath?: (path: string) => Promise<void>;
+  settings?: () => Promise<ShellSettings>;
+  /** Другая папка данных (null — по умолчанию): сервер перезапускается с ней. */
+  setHome?: (path: string | null) => Promise<void>;
+  /** Режим разработчика из копии исходников (null — выключить): сервер перезапускается. */
+  setDevSource?: (path: string | null) => Promise<void>;
+  /** Перезапустить сервер (окно откроется заново). */
+  restart?: () => Promise<void>;
+  openLogs?: () => Promise<void>;
+  /** Файлы, перетащенные в окно: пути на этом компьютере. Возвращает отписку. */
+  onDrop?: (cb: (paths: string[]) => void) => () => void;
+  /** Файлы над окном (true) или ушли (false). */
+  onDragHover?: (cb: (over: boolean) => void) => () => void;
 }
 
 declare global {

@@ -51,7 +51,11 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
         default=[],
         help="Разрешить запросы из браузера со страницы этого адреса (CORS; окну не нужно); можно несколько",
     )
-    p.add_argument("--dev", action="store_true", help="Режим разработчика: /docs и /openapi.json без токена")
+    p.add_argument(
+        "--dev",
+        action="store_true",
+        help="Режим разработчика: /docs и /openapi.json без токена, проверка изменённых модулей тестами",
+    )
     p.add_argument("--no-prestart", action="store_true", help="Запускать исполнители при первом задании")
     p.add_argument("--ui", help="Папка собранного интерфейса (по умолчанию — ui рядом с пакетом сервера)")
     p.add_argument("--openapi", metavar="ФАЙЛ", help="Записать схему OpenAPI в файл и выйти (папка данных не нужна)")
@@ -120,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         text = json.dumps(openapi_schema(), ensure_ascii=False, indent=2) + "\n"
         Path(a.openapi).write_text(text, encoding="utf-8")
         return 0
-    settings = Settings(home=a.home, origins=list(a.origin), prestart=not a.no_prestart)
+    settings = Settings(home=a.home, origins=list(a.origin), prestart=not a.no_prestart, dev=a.dev)
     if a.ui:
         settings.ui = Path(a.ui)
     if os.environ.get("AGEN_TOKEN"):

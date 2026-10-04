@@ -1,0 +1,13 @@
+{
+  "name": "autogenerator-shell",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Оболочка Autogenerator: сборка установщика (Tauri CLI)",
+  "scripts": {
+    "tauri": "tauri",
+    "installer": "tauri build --config tauri.bundle.conf.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -62,6 +62,8 @@ class Settings:
     """Запустить исполнители сразу (в фоне), чтобы первое задание не ждало импорта модулей."""
     ui: Path | None = None
     """Папка собранного интерфейса (``frontend``); по умолчанию — ``ui`` рядом с пакетом, если она есть."""
+    dev: bool = False
+    """Режим разработчика: /docs без токена, проверка и применение изменённых модулей."""
 
 
 class Gate:
@@ -130,6 +132,8 @@ class ServerState:
         self.started_at = datetime.now(UTC).replace(microsecond=0)
         self.shutdown: Callable[[], None] | None = None
         """Остановить сервер (задаёт тот, кто его запустил: ``__main__``)."""
+        self.applied_at = time.time()
+        """С какого момента код модулей в исполнителях (режим разработчика: изменённые после — новые)."""
         self._manifest: PluginManifest | None = None
         self._manifest_error: tuple[float, AgenError] | None = None
         self._manifest_lock = threading.Lock()
@@ -145,7 +149,8 @@ class ServerState:
         worker = RemoteWorker(executors["main"], executors["light"], executors["preview"])
         home = Home.open(settings.home, write=True, worker=worker, owner="приложение Autogenerator")
         bus = LocalEventBus()
-        state = cls(settings, home, bus, LocalJobQueue(bus, lanes=("main", "preview")), executors)
+        # очередь dev — проверка модулей тестами в режиме разработчика, не мешает загрузкам и превью
+        state = cls(settings, home, bus, LocalJobQueue(bus, lanes=("main", "preview", "dev")), executors)
         if settings.prestart:
             for ex in executors.values():
                 threading.Thread(target=_prestart, args=(ex,), name=f"agen-start-{ex.name}", daemon=True).start()
@@ -206,9 +211,14 @@ class ServerState:
             self._manifest_error = None
             return self._manifest
 
-    def busy(self) -> bool:
-        """Идут или ждут задания."""
-        return any(not j.status.finished for j in self.jobs.list())
+    def forget_manifest(self) -> None:
+        """Исполнители перезапущены с новым кодом: манифест модулей прочитать заново."""
+        with self._manifest_lock:
+            self._manifest, self._manifest_error = None, None
+
+    def busy(self, besides: str | None = None) -> bool:
+        """Идут или ждут задания (кроме задания ``besides``)."""
+        return any(not j.status.finished and j.id != besides for j in self.jobs.list())
 
 
 def _prestart(ex: ProcessExecutor) -> None:

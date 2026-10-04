@@ -5,16 +5,18 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 
 from fastapi import APIRouter, status
 
-from autogenerator.contracts import AgenError, ErrorCode
+from autogenerator.contracts import AgenError, ErrorCode, JobContext, JobInfo
 
+from .. import devmode
 from ..deps import HomeDep, StateDep
-from ..models import BackupIn, BackupOut, ModulesOut, RestoreIn, SystemOut
+from ..models import BackupIn, BackupOut, ModulesCheckIn, ModulesOut, RestoreIn, SystemOut
 from ..state import ServerState
 
 router = APIRouter(tags=["система"])
@@ -52,6 +54,8 @@ def system(state: StateDep) -> SystemOut:
         warnings=folder.warnings,
         jobs_active=sum(1 for j in state.jobs.list() if not j.status.finished),
         executors=[ex.info() for ex in state.executors.values()],
+        dev=state.settings.dev,
+        dev_source=str(root) if state.settings.dev and (root := devmode.source_root()) else None,
     )
 
 
@@ -114,6 +118,47 @@ def restart_executors(state: StateDep) -> ModulesOut:
     for ex in state.executors.values():
         ex.close()
     return _modules(state, refresh=True)
+
+
+@router.post("/api/modules/check", status_code=status.HTTP_202_ACCEPTED)
+def check_modules(body: ModulesCheckIn, state: StateDep) -> JobInfo:
+    """Режим разработчика: тесты изменённых модулей, и если прошли — исполнители с новым кодом
+    (задание; итог — ``ModulesCheckOut``)."""
+    root = devmode.source_root()
+    if not state.settings.dev or root is None:
+        raise AgenError(
+            ErrorCode.NOT_IMPLEMENTED,
+            "Проверка модулей работает в режиме разработчика: приложение запущено из копии исходников",
+            hint="Укажите папку с исходниками на экране «Модули» в окне приложения или запустите "
+            "`uv run agen serve --dev` в копии исходников.",
+        )
+    unknown = [m for m in body.modules or [] if not (root / "packages" / m).is_dir()]
+    if unknown:
+        known = ", ".join(sorted(p.name for p in (root / "packages").iterdir() if p.is_dir()))
+        raise AgenError(ErrorCode.SPEC_INVALID, f"Нет модулей: {', '.join(unknown)}", hint=f"Есть: {known}")
+    since = state.applied_at
+
+    def job(ctx: JobContext) -> dict[str, object]:
+        names = body.modules if body.modules is not None else devmode.changed_modules(root, since)
+        started = time.time()
+        results = devmode.check_modules(root, names, ctx)
+        ok = bool(names) and len(results) == len(names) and all(r.ok for r in results)
+        applied, note = False, None
+        if ok and body.apply:
+            if state.busy(besides=ctx.job_id):
+                note = "Идут задания: новый код не применён. Повторите проверку, когда они закончатся."
+            else:
+                for ex in state.executors.values():
+                    ex.close()
+                state.forget_manifest()
+                state.applied_at, applied = started, True
+        restart = applied and any(n in devmode.SERVER_SIDE for n in names)
+        out = devmode.ModulesCheckOut(
+            source=str(root), modules=results, applied=applied, restart_app=restart, note=note
+        )
+        return out.model_dump(mode="json")
+
+    return state.jobs.submit("check_modules", job, lane="dev", title="Проверка изменённых модулей")
 
 
 @router.post("/api/modules/cache/clear")

@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Окно приложения: стартовая страница оболочки и страницы локального сервера на 127.0.0.1",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "core:default",
+    "allow-pick-files",
+    "allow-pick-folder",
+    "allow-open-path",
+    "allow-shell-state",
+    "allow-shell-settings",
+    "allow-set-home",
+    "allow-set-dev-source",
+    "allow-restart-server",
+    "allow-use-last-good",
+    "allow-open-logs"
+  ]
+}

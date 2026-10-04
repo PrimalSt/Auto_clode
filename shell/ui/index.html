@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autogenerator</title>
+    <!-- Стартовая страница оболочки: пока сервер запускается — заставка; если не запустился — безопасный режим. -->
+    <style>
+      :root {
+        --bg: #f8f9fa;
+        --card: #ffffff;
+        --text: #212529;
+        --muted: #6c757d;
+        --border: #dee2e6;
+        --accent: #228be6;
+        --danger: #e03131;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b1e;
+          --card: #25262b;
+          --text: #e9ecef;
+          --muted: #909296;
+          --border: #373a40;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      main {
+        width: min(680px, calc(100vw - 32px));
+      }
+      h1 {
+        font-size: 22px;
+        font-weight: 600;
+        margin: 0 0 16px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px 24px;
+      }
+      .starting {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+      }
+      .spinner {
+        width: 22px;
+        height: 22px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+        flex: none;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      h2 {
+        font-size: 17px;
+        margin: 0 0 8px;
+        color: var(--danger);
+      }
+      .reason {
+        margin: 8px 0;
+        white-space: pre-wrap;
+      }
+      .actions {
+        display: grid;
+        gap: 8px;
+        margin: 16px 0;
+      }
+      button {
+        font: inherit;
+        text-align: left;
+        padding: 9px 14px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button small {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      button.primary small {
+        color: #e7f5ff;
+      }
+      pre {
+        max-height: 220px;
+        overflow: auto;
+        font-size: 12px;
+        background: var(--bg);
+        padding: 8px;
+        border-radius: 4px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .error {
+        color: var(--danger);
+        font-size: 13px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Autogenerator</h1>
+      <div class="card" id="starting">
+        <div class="starting">
+          <div class="spinner"></div>
+          <div>
+            <div id="starting-text">Запускаю приложение…</div>
+            <div class="muted" id="starting-note"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="safe" hidden>
+        <h2>Безопасный режим</h2>
+        <div>Сервер приложения не работает.</div>
+        <div class="reason" id="reason"></div>
+        <div class="muted" id="hint"></div>
+        <div class="actions">
+          <button class="primary" data-act="retry">Попробовать снова<small>С теми же настройками</small></button>
+          <button data-act="nodev" id="act-nodev">Запустить без режима разработчика<small id="dev-source"></small></button>
+          <button data-act="lastgood" id="act-lastgood">Вернуться к последнему удачному запуску<small id="last-good"></small></button>
+          <button data-act="folder">Выбрать другую папку данных…<small id="home"></small></button>
+          <button data-act="defaulthome" id="act-defaulthome">Папка данных по умолчанию<small id="default-home"></small></button>
+          <button data-act="logs">Открыть журналы<small>Журнал сервера в папке данных и журнал оболочки</small></button>
+        </div>
+        <div class="error" id="action-error"></div>
+        <details id="log-box">
+          <summary class="muted">Последние строки вывода сервера</summary>
+          <pre id="log"></pre>
+        </details>
+      </div>
+      <p class="muted" id="version"></p>
+    </main>
+    <script>
+      const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args || {});
+      const $ = (id) => document.getElementById(id);
+      let last = null;
+
+      function render(s) {
+        const st = s.state;
+        $("version").textContent = `Версия ${s.version} · папка данных: ${s.home}`;
+        const safe = st.phase === "safe";
+        $("safe").hidden = !safe;
+        $("starting").hidden = safe;
+        if (!safe) {
+          $("starting-text").textContent =
+            st.phase === "stopping" ? "Перезапускаю сервер приложения…" : st.phase === "running" ? "Открываю окно…" : "Запускаю приложение…";
+          $("starting-note").textContent = st.note || (st.attempt > 1 ? `Попытка ${st.attempt}` : "");
+          return;
+        }
+        $("reason").textContent = st.reason;
+        $("hint").textContent = st.hint || "";
+        $("log").textContent = st.log || "";
+        $("log-box").hidden = !st.log;
+        $("act-nodev").hidden = !s.dev_source;
+        $("dev-source").textContent = s.dev_source ? `Сейчас сервер запускается из ${s.dev_source}` : "";
+        $("act-lastgood").hidden = !s.can_use_last_good;
+        const lg = s.last_good || {};
+        $("last-good").textContent = `Папка данных: ${lg.home || s.default_home}${lg.dev_source ? ` · исходники: ${lg.dev_source}` : ""}`;
+        $("home").textContent = `Сейчас: ${s.home}`;
+        $("act-defaulthome").hidden = !s.custom_home;
+        $("default-home").textContent = s.default_home;
+      }
+
+      async function poll() {
+        try {
+          const s = await invoke("shell_state");
+          const key = JSON.stringify(s);
+          if (key !== last) {
+            last = key;
+            render(s);
+          }
+        } catch (e) {
+          $("starting-note").textContent = String(e);
+        }
+        setTimeout(poll, 400);
+      }
+
+      async function act(name) {
+        $("action-error").textContent = "";
+        try {
+          if (name === "retry") await invoke("restart_server");
+          if (name === "nodev") await invoke("set_dev_source", { path: null });
+          if (name === "lastgood") await invoke("use_last_good");
+          if (name === "defaulthome") await invoke("set_home", { path: null });
+          if (name === "logs") await invoke("open_logs");
+          if (name === "folder") {
+            const p = await invoke("pick_folder", { opts: { title: "Папка данных Autogenerator" } });
+            if (p) await invoke("set_home", { path: p });
+          }
+        } catch (e) {
+          $("action-error").textContent = String(e);
+        }
+      }
+
+      document.querySelectorAll("button[data-act]").forEach((b) => b.addEventListener("click", () => act(b.dataset.act)));
+      poll();
+    </script>
+  </body>
+</html>

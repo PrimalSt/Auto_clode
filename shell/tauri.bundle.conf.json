@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "resources": {
+      "../build/bundle/python/": "python/",
+      "../build/bundle/bin/": "bin/",
+      "../build/bundle/sdk/": "sdk/"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian"],
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

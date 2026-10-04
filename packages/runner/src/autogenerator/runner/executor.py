@@ -11,6 +11,12 @@
 копились. Модуль исполнителя может попросить перезапуск после вызова — функцией
 ``restart_requested()`` (``autogenerator.worker``: в процессе выполнялся код пользователя); новый
 процесс тогда запускается сразу, в фоне.
+
+В Windows под оболочкой (переменная ``AGEN_WINDOWLESS``) исполнитель установленного приложения
+запускается через pythonw.exe: так у него точно нет консольного окна. Сервер оболочка запускает
+со скрытой консолью (``CREATE_NO_WINDOW``), её наследуют и дочерние python.exe; поэтому в
+окружении ``.venv`` (режим разработчика) исполнитель остаётся python.exe — pythonw.exe там лишь
+переадресует к настоящему Python, и завершение исполнителя не дошло бы до него.
 """
 
 from __future__ import annotations
@@ -20,12 +26,14 @@ import importlib
 import multiprocessing as mp
 import os
 import pickle
+import sys
 import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event
+from pathlib import Path
 from typing import Any
 
 from autogenerator.contracts import AgenError, ErrorCode, ExecutorInfo, ProgressCallback
@@ -53,9 +61,23 @@ def _restart_requested(module: Any) -> bool:
         return True  # состояние процесса неизвестно: надёжнее начать заново
 
 
+def windowless_executable() -> str | None:
+    """pythonw.exe рядом с python.exe, если сервер работает под оболочкой Windows не из ``.venv``,
+    иначе None."""
+    if sys.platform != "win32" or not os.environ.get("AGEN_WINDOWLESS") or sys.prefix != sys.base_prefix:
+        return None
+    exe = Path(sys.executable).with_name("pythonw.exe")
+    return str(exe) if exe.is_file() else None
+
+
 def _child(target: str, conn: Connection, cancel: Event, env: Mapping[str, str]) -> None:
     """Цикл процесса-исполнителя."""
     os.environ.update(env)
+    if sys.stdout is None or sys.stderr is None:
+        # pythonw: потоков вывода нет, а модули и библиотеки иногда печатают
+        sink = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 — живёт, пока жив процесс
+        sys.stdout = sys.stdout or sink
+        sys.stderr = sys.stderr or sink
     try:
         module = importlib.import_module(target)
     except BaseException:
@@ -116,6 +138,8 @@ class ProcessExecutor:
         self.start_timeout = start_timeout
         self.env = dict(env or {})
         self._ctx = mp.get_context("spawn")
+        if exe := windowless_executable():
+            self._ctx.set_executable(exe)
         self._lock = threading.Lock()
         self._proc: Any = None
         self._conn: Connection | None = None
