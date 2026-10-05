@@ -103,13 +103,27 @@ jobs:
           & $python -c "import ipykernel, autogenerator.api; print('ядро Jupyter: ok')"
           if ($LASTEXITCODE -ne 0) { throw "Python ядра Jupyter не запускается" }
 
-      - name: agen не видит окружение пользователя
+      - name: agen и ядро Jupyter не видят окружение пользователя
         shell: pwsh
         run: |
-          # чужие PYTHONHOME и PYTHONPATH и пакет autogenerator в текущей папке не мешают agen
           $trap = Join-Path $env:RUNNER_TEMP "agen-trap"
           New-Item -ItemType Directory -Force (Join-Path $trap "autogenerator") | Out-Null
           Set-Content (Join-Path $trap "autogenerator\__init__.py") "raise ImportError('agen взял чужой пакет')"
+          # ядро запускается, как его запускает Jupyter: окружение пользователя (здесь — с чужими
+          # PYTHONHOME и PYTHONPATH) плюс env из kernel.json
+          $kernel = Join-Path $env:APPDATA "jupyter\kernels\autogenerator\kernel.json"
+          $python = (Get-Content $kernel -Raw | ConvertFrom-Json).argv[0]
+          $launch = Join-Path $env:RUNNER_TEMP "kernel-env.py"
+          Set-Content $launch @'
+          import json, os, subprocess, sys
+          spec = json.load(open(sys.argv[1], encoding="utf-8"))
+          env = {**os.environ, "PYTHONHOME": sys.argv[2], "PYTHONPATH": sys.argv[2], **spec["env"]}
+          code = "import ipykernel, autogenerator.api; print('ядро Jupyter с чужим окружением: ok')"
+          sys.exit(subprocess.run([spec["argv"][0], "-c", code], env=env).returncode)
+          '@
+          & $python -I $launch $kernel $trap
+          if ($LASTEXITCODE -ne 0) { throw "Ядро Jupyter с чужим окружением: код $LASTEXITCODE" }
+          # чужие PYTHONHOME и PYTHONPATH и пакет autogenerator в текущей папке не мешают agen
           $env:PYTHONHOME = $trap
           $env:PYTHONPATH = $trap
           Push-Location $trap
@@ -160,6 +174,19 @@ jobs:
           $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
           if ($userPath -split ";" | Where-Object { $_.TrimEnd("\") -ieq $bin }) { throw "agen остался в PATH" }
           if (Test-Path (Join-Path $env:APPDATA "jupyter\kernels\autogenerator")) { throw "Ядро Jupyter осталось" }
+
+      - name: Неудачная регистрация — установщик кончается кодом 2
+        shell: pwsh
+        run: |
+          # на месте папки ядра Jupyter — файл: --register не запишет ядро; установщик ставит
+          # приложение, предупреждает (в тихой установке — без окна) и завершается с кодом 2
+          $kernels = Join-Path $env:APPDATA "jupyter\kernels"
+          New-Item -ItemType Directory -Force $kernels | Out-Null
+          Set-Content (Join-Path $kernels "autogenerator") "не папка"
+          $setup = Get-ChildItem shell/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($p.ExitCode -ne 2) { throw "Установщик при неудачной регистрации: код $($p.ExitCode), а не 2" }
+          if (-not (Test-Path (Join-Path $env:AGEN_INSTALL "autogenerator.exe"))) { throw "Приложение не установилось" }
 
       - uses: actions/upload-artifact@v4
         with:
