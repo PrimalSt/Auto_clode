@@ -45,12 +45,16 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 /// Описание ядра Jupyter для Python приложения.
+///
+/// `PYTHONHOME` и `PYTHONPATH` пользователя ядру не передаются: пустое значение Python считает
+/// незаданным (чужой `PYTHONHOME` не дал бы ядру запуститься). `PYTHONSAFEPATH` не ставится:
+/// папка блокнота остаётся в путях импорта, и блокнот видит свои файлы.
 pub fn kernel_spec(python: &Path) -> serde_json::Value {
     serde_json::json!({
         "argv": [python.display().to_string(), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
         "display_name": "Autogenerator",
         "language": "python",
-        "env": {"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1"},
+        "env": {"PYTHONHOME": "", "PYTHONPATH": "", "PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1"},
         "metadata": {"debugger": true}
     })
 }
@@ -273,5 +277,8 @@ mod tests {
         let spec = kernel_spec(Path::new(r"C:\App\python\python.exe"));
         assert_eq!(spec["argv"][0], r"C:\App\python\python.exe");
         assert_eq!(spec["argv"][2], "ipykernel_launcher");
+        assert_eq!(spec["env"]["PYTHONHOME"], "");
+        assert_eq!(spec["env"]["PYTHONPATH"], "");
+        assert_eq!(spec["env"]["PYTHONNOUSERSITE"], "1");
     }
 }
