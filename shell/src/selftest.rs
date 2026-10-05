@@ -2,7 +2,8 @@
 //!
 //! Запускает сервер так же, как окно (тот же Python, объект задания, токен), и проверяет:
 //! здоровье, токен, сведения о системе, исполнители и манифест модулей, отдачу интерфейса,
-//! остановку. Без `--home` берётся временная папка данных, которая потом удаляется: данные
+//! остановку (сервер должен остановиться сам по просьбе и без ошибки, а не завершиться
+//! принудительно). Без `--home` берётся временная папка данных, которая потом удаляется: данные
 //! пользователя не трогаются. Код выхода 0 — всё прошло. CI запускает это после тихой установки.
 
 use crate::http;
@@ -44,9 +45,10 @@ pub fn run(home: Option<PathBuf>, report: Option<PathBuf>) -> i32 {
         check(
             "объект задания",
             job.as_ref()
-                .map(|_| match job::total_memory() {
+                .map(|_| match job::memory_limit() {
                     0 => "не нужен вне Windows".to_string(),
-                    m => format!("предел памяти процесса {:.1} ГБ", m as f64 * job::MEMORY_SHARE / 1e9),
+                    // ГБ — по 1024³ байт, как в окне приложения
+                    m => format!("предел памяти процесса {:.1} ГБ", m as f64 / (1u64 << 30) as f64),
                 })
                 .map_err(Clone::clone),
         );
@@ -105,12 +107,14 @@ pub fn run(home: Option<PathBuf>, report: Option<PathBuf>) -> i32 {
                             .ok_or(format!("код {}", r.status))
                     }),
                 );
-                srv.shutdown(&token);
                 check(
                     "остановка",
-                    srv.exited()
-                        .map(|how| format!("сервер остановлен ({how})"))
-                        .ok_or("сервер не остановился".into()),
+                    match srv.shutdown(&token) {
+                        server::Stop::Clean => Ok("сервер остановился сам (код 0)".into()),
+                        server::Stop::Failed(how) => Err(format!("сервер остановился с ошибкой ({how})")),
+                        server::Stop::Killed(why) => Err(format!("сервер {why}: процесс завершён")),
+                        server::Stop::Exited(how) => Err(format!("сервер завершился раньше времени ({how})")),
+                    },
                 );
             }
             Err(e) => {

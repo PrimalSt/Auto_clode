@@ -7,14 +7,15 @@
 //!
 //! Надзор: упал сервер — перезапуск; три сбоя подряд или ошибка, которую повтор не исправит, —
 //! безопасный режим на стартовой странице (повторить, без режима разработчика, последний
-//! удачный запуск, другая папка данных, журналы). Токен один на всё время работы оболочки.
+//! удачный запуск, другая папка данных, журналы). Удачный запуск — тот, где сервер проработал
+//! минуту (`STABLE`). Токен один на всё время работы оболочки.
 
 use crate::server::{self, ServerProcess, StartError};
-use crate::settings::{self, Settings};
+use crate::settings::{self, Launch, Settings};
 use crate::{http, job};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{
@@ -27,6 +28,8 @@ const MAX_FAILURES: u32 = 3;
 /// Сервер, проработавший дольше, упал «во время работы»: счёт сбоев начинается заново.
 const STABLE: Duration = Duration::from_secs(60);
 const START_TIMEOUT: Duration = Duration::from_secs(120);
+/// Сколько при закрытии окна ждать ответа сервера, идут ли задания.
+const CLOSE_CHECK: Duration = Duration::from_secs(3);
 /// Что можно открыть программой по умолчанию из окна (отчёты, выгрузки, журналы, папки).
 const OPENABLE: &[&str] = &[
     "pptx", "ppt", "potx", "xlsx", "xlsm", "xlsb", "xls", "csv", "txt", "log", "json", "yaml", "yml", "pdf", "png",
@@ -63,6 +66,10 @@ pub struct Shell {
     phase: Mutex<Phase>,
     port: Arc<AtomicU16>,
     tx: mpsc::Sender<Cmd>,
+    /// Предел памяти процесса из объекта задания (0 — объекта задания нет).
+    memory_limit: AtomicU64,
+    /// Идёт вопрос о закрытии окна (второе нажатие на крестик его не повторяет).
+    closing: AtomicBool,
 }
 
 impl Shell {
@@ -74,11 +81,12 @@ impl Shell {
         let _ = self.tx.send(Cmd::Restart);
     }
 
-    /// Остановить сервер при выходе (ждём не дольше 12 с: дальше его завершит объект задания).
+    /// Остановить сервер при выходе. Ждём чуть дольше, чем длится остановка сервера (просьба,
+    /// ожидание, завершение процесса); если и этого мало — сервер завершит объект задания.
     fn quit(&self) {
         let (done, wait) = mpsc::channel();
         if self.tx.send(Cmd::Quit(done)).is_ok() {
-            let _ = wait.recv_timeout(Duration::from_secs(12));
+            let _ = wait.recv_timeout(server::STOP_BUDGET + Duration::from_secs(2));
         }
     }
 
@@ -88,10 +96,12 @@ impl Shell {
         s.save()
     }
 
-    fn remember_good(&self) {
+    /// Запомнить удачный запуск — с теми настройками, с которыми сервер запускался (их могли
+    /// уже поменять для следующего запуска).
+    fn remember_good(&self, launch: &Launch) {
         let mut s = self.settings.lock().unwrap();
-        if s.last_good.as_ref() != Some(&s.launch) {
-            s.last_good = Some(s.launch.clone());
+        if s.last_good.as_ref() != Some(launch) {
+            s.last_good = Some(launch.clone());
             if let Err(e) = s.save() {
                 settings::log(&e);
             }
@@ -111,7 +121,7 @@ impl Shell {
                 "home": path(&l.home), "dev_source": path(&l.dev_source),
             })),
             "can_use_last_good": s.last_good.as_ref().is_some_and(|l| *l != s.launch),
-            "memory_limit": (job::total_memory() as f64 * job::MEMORY_SHARE) as u64,
+            "memory_limit": self.memory_limit.load(Ordering::SeqCst),
             "config": settings::config_dir().display().to_string(),
         });
         if with_phase {
@@ -135,7 +145,9 @@ enum Outcome {
     Exited(String),
 }
 
-fn wait(srv: &mut ServerProcess, rx: &mpsc::Receiver<Cmd>) -> Outcome {
+/// Ждать команды или конца сервера; `stable` вызывается один раз, когда сервер проработал `STABLE`.
+fn wait(srv: &mut ServerProcess, rx: &mpsc::Receiver<Cmd>, mut stable: impl FnMut()) -> Outcome {
+    let mut seen_stable = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(300)) {
             Ok(Cmd::Restart) => return Outcome::Restart,
@@ -146,13 +158,33 @@ fn wait(srv: &mut ServerProcess, rx: &mpsc::Receiver<Cmd>) -> Outcome {
         if let Some(how) = srv.exited() {
             return Outcome::Exited(how);
         }
+        if !seen_stable && srv.uptime() > STABLE {
+            seen_stable = true;
+            stable();
+        }
     }
+}
+
+/// Подсказка безопасного режима, когда сервер упал или не ответил (сам он причину не назвал).
+fn crash_hint(launch: &Launch) -> String {
+    let mut hint = "Последние строки вывода сервера — ниже, полные журналы — «Открыть журналы».".to_string();
+    if launch.dev_source.is_some() {
+        hint.push_str(
+            " Сервер запускался из копии исходников: если сбой из-за правки кода, запустите без режима разработчика.",
+        );
+    }
+    hint
 }
 
 fn supervise(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
     let job = job::for_server()
         .map_err(|e| settings::log(&format!("Объект задания не создан: {e}")))
         .ok();
+    if job.is_some() {
+        app.state::<Shell>()
+            .memory_limit
+            .store(job::memory_limit(), Ordering::SeqCst);
+    }
     let mut failures = 0u32;
     loop {
         let shell = app.state::<Shell>();
@@ -166,10 +198,11 @@ fn supervise(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         let safe = match server::start(&s.launch, &s.home(), &shell.token, job.as_ref(), START_TIMEOUT) {
             Ok(mut srv) => {
                 shell.port.store(srv.port, Ordering::SeqCst);
-                shell.remember_good();
                 shell.set_phase(Phase::Running { url: srv.url.clone() });
                 navigate(&app, &srv.url);
-                let outcome = wait(&mut srv, &rx);
+                // удачным запуск считается, когда сервер проработал минуту, а не сразу после готовности:
+                // запуск, который поднялся и упал, не должен вытеснить прошлый удачный
+                let outcome = wait(&mut srv, &rx, || shell.remember_good(&s.launch));
                 shell.port.store(0, Ordering::SeqCst);
                 match outcome {
                     Outcome::Restart => {
@@ -202,17 +235,22 @@ fn supervise(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
                                 "Сервер приложения завершился с ошибкой {MAX_FAILURES} раза подряд ({how})"
                             ),
                             code: None,
-                            hint: None,
+                            hint: Some(crash_hint(&s.launch)),
                             log: srv.log_tail(),
                         }
                     }
                 }
             }
-            Err(StartError::Reported { code, message, hint }) => Phase::Safe {
+            Err(StartError::Reported {
+                code,
+                message,
+                hint,
+                log,
+            }) => Phase::Safe {
                 reason: message,
                 code: Some(code),
                 hint,
-                log: String::new(),
+                log,
             },
             Err(StartError::Failed { message, log }) => {
                 failures += 1;
@@ -223,7 +261,7 @@ fn supervise(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
                 Phase::Safe {
                     reason: message,
                     code: None,
-                    hint: None,
+                    hint: Some(crash_hint(&s.launch)),
                     log,
                 }
             }
@@ -329,46 +367,60 @@ fn bridge_script(token: &str) -> String {
         .replace("__VERSION__", &json(settings::VERSION))
 }
 
-/// Закрыть окно, пока идут задания, — только после вопроса.
+/// Что спросить при закрытии окна: `None` — заданий нет, закрыть без вопроса. Сервер не ответил
+/// (`active` пусто) — неизвестно, идут ли задания, поэтому вопрос задаётся.
+fn close_question(active: Option<u64>) -> Option<String> {
+    match active {
+        Some(0) => None,
+        Some(n) => Some(format!("Идут задания: {n}. Если закрыть приложение, они прервутся.")),
+        None => Some(
+            "Сервер приложения не ответил, поэтому неизвестно, идут ли задания. Если закрыть приложение, \
+             идущие задания прервутся."
+                .into(),
+        ),
+    }
+}
+
+/// Закрыть окно, пока идут задания, — только после вопроса. Сервер спрашивается в отдельном
+/// потоке, чтобы окно не замирало, пока он отвечает.
 fn confirm_close(window: &WebviewWindow, api: &tauri::CloseRequestApi) {
     let shell = window.state::<Shell>();
     let port = shell.port.load(Ordering::SeqCst);
     if port == 0 {
         return;
     }
-    let active = http::request(
-        port,
-        "GET",
-        "/api/system",
-        Some(&shell.token),
-        Duration::from_millis(800),
-    )
-    .ok()
-    .and_then(|r| r.json())
-    .and_then(|j| j["jobs_active"].as_u64())
-    .unwrap_or(0);
-    if active == 0 {
-        return;
-    }
     api.prevent_close();
-    let app = window.app_handle().clone();
-    window
-        .dialog()
-        .message(format!(
-            "Идут задания: {active}. Если закрыть приложение, они прервутся."
-        ))
-        .title("Закрыть Autogenerator?")
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Закрыть".into(),
-            "Не закрывать".into(),
-        ))
-        .parent(window)
-        .show(move |close| {
-            if close {
-                app.exit(0);
-            }
-        });
+    if shell.closing.swap(true, Ordering::SeqCst) {
+        return; // вопрос уже задаётся
+    }
+    let window = window.clone();
+    std::thread::spawn(move || {
+        let shell = window.state::<Shell>();
+        let active = http::request(port, "GET", "/api/system", Some(&shell.token), CLOSE_CHECK)
+            .ok()
+            .filter(|r| r.status == 200)
+            .and_then(|r| r.json())
+            .and_then(|j| j["jobs_active"].as_u64());
+        let close = match close_question(active) {
+            None => true,
+            Some(text) => window
+                .dialog()
+                .message(text)
+                .title("Закрыть Autogenerator?")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Закрыть".into(),
+                    "Не закрывать".into(),
+                ))
+                .parent(&window)
+                .blocking_show(),
+        };
+        if close {
+            window.app_handle().exit(0);
+        } else {
+            shell.closing.store(false, Ordering::SeqCst);
+        }
+    });
 }
 
 fn main_window(app: &AppHandle, token: &str, port: Arc<AtomicU16>) -> tauri::Result<WebviewWindow> {
@@ -458,9 +510,26 @@ async fn pick_folder(window: WebviewWindow, opts: Option<PickOpts>) -> Result<Op
         .map(|p| p.display().to_string()))
 }
 
+/// Сетевой путь (`\\сервер\папка`, `\\?\UNC\…`): открывать его нельзя — Windows сам отправил бы
+/// серверу данные для входа. `\\?\C:\…` — локальный.
+fn is_network(path: &str) -> bool {
+    let p = path.replace('/', "\\");
+    match p.strip_prefix(r"\\?\") {
+        Some(rest) => rest.as_bytes().get(1) != Some(&b':'),
+        None => p.starts_with(r"\\"),
+    }
+}
+
 #[tauri::command]
 fn open_path(path: String, reveal: Option<bool>) -> Result<(), String> {
-    let p = PathBuf::from(path.trim());
+    let raw = path.trim().trim_matches('"');
+    if is_network(raw) {
+        return Err(format!("Сетевые пути приложение не открывает: {raw}"));
+    }
+    let p = PathBuf::from(raw);
+    if !p.is_absolute() {
+        return Err(format!("Нужен полный путь: {raw}"));
+    }
     if !p.exists() {
         return Err(format!("Не найдено: {}", p.display()));
     }
@@ -495,7 +564,7 @@ fn local_folder(path: Option<String>) -> Result<Option<PathBuf>, String> {
     else {
         return Ok(None);
     };
-    if p.starts_with("\\\\") || p.starts_with("//") {
+    if is_network(&p) {
         return Err("Папка должна быть на этом компьютере, а не в сети".into());
     }
     let pb = PathBuf::from(&p);
@@ -544,11 +613,20 @@ fn use_last_good(shell: State<'_, Shell>) -> Result<(), String> {
     Ok(())
 }
 
+/// Журналы: папка `logs` в папке данных (журнал сервера, если сервер уже запускался с этой
+/// папкой) и `shell.log` в папке настроек (журнал оболочки) — оба в окнах проводника.
 #[tauri::command]
 fn open_logs(shell: State<'_, Shell>) -> Result<(), String> {
-    let logs = shell.settings.lock().unwrap().home().join("logs");
-    let dir = if logs.is_dir() { logs } else { settings::config_dir() };
-    tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(|e| e.to_string())
+    let server_logs = shell.settings.lock().unwrap().home().join("logs");
+    if server_logs.is_dir() {
+        tauri_plugin_opener::open_path(&server_logs, None::<&str>).map_err(|e| e.to_string())?;
+    }
+    let shell_log = settings::config_dir().join("shell.log");
+    if shell_log.is_file() {
+        tauri_plugin_opener::reveal_item_in_dir(&shell_log).map_err(|e| e.to_string())
+    } else {
+        tauri_plugin_opener::open_path(settings::config_dir(), None::<&str>).map_err(|e| e.to_string())
+    }
 }
 
 pub fn run() {
@@ -561,6 +639,8 @@ pub fn run() {
         phase: Mutex::new(Phase::Starting { attempt: 1, note: None }),
         port: port.clone(),
         tx,
+        memory_limit: AtomicU64::new(0),
+        closing: AtomicBool::new(false),
     };
     settings::log(&format!("Оболочка {} запущена", settings::VERSION));
     let app = tauri::Builder::default()
@@ -622,5 +702,35 @@ mod tests {
         assert!(local_folder(Some("relative".into())).is_err());
         assert_eq!(local_folder(Some("  ".into())).unwrap(), None);
         assert_eq!(new_token().len(), 64);
+    }
+
+    #[test]
+    fn network_paths_are_not_opened() {
+        assert!(is_network(r"\\server\share\report.pptx"));
+        assert!(is_network("//server/share"));
+        assert!(is_network(r"\\?\UNC\server\share"));
+        assert!(!is_network(r"\\?\C:\Reports\report.pptx"));
+        assert!(!is_network(r"C:\Reports\report.pptx"));
+        assert!(open_path(r"\\server\share\x.pptx".into(), None)
+            .unwrap_err()
+            .contains("Сетевые"));
+        assert!(open_path("relative.pptx".into(), None)
+            .unwrap_err()
+            .contains("полный путь"));
+    }
+
+    #[test]
+    fn closing_asks_when_jobs_run_or_the_server_is_silent() {
+        assert_eq!(close_question(Some(0)), None);
+        assert!(close_question(Some(2)).unwrap().contains("Идут задания: 2"));
+        assert!(close_question(None).unwrap().contains("не ответил"));
+    }
+
+    #[test]
+    fn crash_hint_suggests_leaving_dev_mode_only_in_dev_mode() {
+        let mut launch = Launch::default();
+        assert!(!crash_hint(&launch).contains("разработчика"));
+        launch.dev_source = Some(PathBuf::from("/src"));
+        assert!(crash_hint(&launch).contains("без режима разработчика"));
     }
 }

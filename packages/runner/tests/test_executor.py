@@ -116,3 +116,22 @@ def test_restart_when_module_asks(ex):
         ex.call("dirty", (True,))
     assert e.value.code == ErrorCode.USER_CODE
     assert ex.call("pid") not in (first, second) and ex.info().restarts == 2
+
+
+def test_output_without_console_goes_to_the_executor_log(tmp_path, monkeypatch):
+    # pythonw (установленное приложение под оболочкой): потоков вывода нет, печать — в журнал
+    from autogenerator.runner import executor
+
+    log = tmp_path / "executor-main.log"
+    log.write_bytes(b"x" * (executor.LOG_LIMIT + 1))
+    monkeypatch.setenv("AGEN_EXECUTOR_LOG", str(log))
+    sink = executor._output_sink()
+    try:
+        print("печать модуля", file=sink)
+    finally:
+        sink.close()
+    assert log.read_text(encoding="utf-8") == "печать модуля\n"
+    assert (tmp_path / "executor-main.log.1").stat().st_size == executor.LOG_LIMIT + 1
+    monkeypatch.delenv("AGEN_EXECUTOR_LOG")
+    with executor._output_sink() as nowhere:
+        assert nowhere.name == os.devnull

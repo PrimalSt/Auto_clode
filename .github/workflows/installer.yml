@@ -32,6 +32,9 @@ jobs:
             shell/package-lock.json
       - uses: astral-sh/setup-uv@v6
         with:
+          # версия uv закреплена: от неё зависит сборка Python приложения (версия Python — в
+          # tools/build_bundle.py); новые ставятся вместе, осознанно
+          version: "0.8.17"
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,14 +65,15 @@ jobs:
           npm ci
           npx tauri build --config tauri.bundle.conf.json
 
-      - name: Тихая установка
+      - name: Тихая установка в папку по умолчанию
         shell: pwsh
         run: |
           $setup = Get-ChildItem shell/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           "Установщик: $($setup.Name), $([math]::Round($setup.Length / 1MB)) МБ" >> $env:GITHUB_STEP_SUMMARY
-          $dir = Join-Path $env:RUNNER_TEMP "Autogenerator"
-          # /D= — последним и без кавычек (так требует NSIS)
-          $p = Start-Process $setup.FullName -ArgumentList "/S", "/D=$dir" -Wait -PassThru
+          # без /D= — как у пользователя: %LOCALAPPDATA%\Autogenerator, это же папка данных по умолчанию
+          $dir = Join-Path $env:LOCALAPPDATA "Autogenerator"
+          # код не 0 — в том числе если не удалась регистрация agen и ядра Jupyter (--register)
+          $p = Start-Process $setup.FullName -ArgumentList "/S" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Установщик завершился с кодом $($p.ExitCode)" }
           if (-not (Test-Path (Join-Path $dir "autogenerator.exe"))) { throw "Приложение не установилось в $dir" }
           if (-not (Test-Path (Join-Path $dir "python\python.exe"))) { throw "Нет Python приложения" }
@@ -99,13 +103,59 @@ jobs:
           & $python -c "import ipykernel, autogenerator.api; print('ядро Jupyter: ok')"
           if ($LASTEXITCODE -ne 0) { throw "Python ядра Jupyter не запускается" }
 
+      - name: agen не видит окружение пользователя
+        shell: pwsh
+        run: |
+          # чужие PYTHONHOME и PYTHONPATH и пакет autogenerator в текущей папке не мешают agen
+          $trap = Join-Path $env:RUNNER_TEMP "agen-trap"
+          New-Item -ItemType Directory -Force (Join-Path $trap "autogenerator") | Out-Null
+          Set-Content (Join-Path $trap "autogenerator\__init__.py") "raise ImportError('agen взял чужой пакет')"
+          $env:PYTHONHOME = $trap
+          $env:PYTHONPATH = $trap
+          Push-Location $trap
+          & (Join-Path $env:AGEN_INSTALL "bin\agen.cmd") version
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { throw "agen с чужим окружением: код $code" }
+
+      - name: Данные в папке по умолчанию (она же папка установки)
+        shell: pwsh
+        run: |
+          $agen = Join-Path $env:AGEN_INSTALL "bin\agen.cmd"
+          & $agen source import examples/sales/sources.yaml
+          if ($LASTEXITCODE -ne 0) { throw "agen source import: код $LASTEXITCODE" }
+          & $agen backup create
+          if ($LASTEXITCODE -ne 0) { throw "agen backup create: код $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $env:AGEN_INSTALL "db"))) { throw "Папка данных не в папке установки" }
+
+      - name: Модули для своего Python из sdk
+        shell: pwsh
+        run: |
+          # команда из README установки: pip install --find-links sdk\wheels autogenerator-api -c sdk\constraints.txt
+          $venv = Join-Path $env:RUNNER_TEMP "sdk-venv"
+          & (Join-Path $env:AGEN_INSTALL "python\python.exe") -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw "venv: код $LASTEXITCODE" }
+          $py = Join-Path $venv "Scripts\python.exe"
+          $sdk = Join-Path $env:AGEN_INSTALL "sdk"
+          & $py -m pip install --disable-pip-version-check --quiet --find-links (Join-Path $sdk "wheels") autogenerator-api -c (Join-Path $sdk "constraints.txt")
+          if ($LASTEXITCODE -ne 0) { throw "pip install из sdk: код $LASTEXITCODE" }
+          & $py -c "from autogenerator.api import run; print('sdk: ok')"
+          if ($LASTEXITCODE -ne 0) { throw "autogenerator.api из sdk не импортируется" }
+
       - name: Удаление
         shell: pwsh
         run: |
-          # _?= — деинсталлятор работает на месте и не возвращается раньше времени
+          # _?= — деинсталлятор работает на месте и не возвращается раньше времени;
+          # поэтому себя он удалить не может (из «Приложений» Windows он запускается копией и удаляет)
           $p = Start-Process (Join-Path $env:AGEN_INSTALL "uninstall.exe") -ArgumentList "/S", "_?=$env:AGEN_INSTALL" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Деинсталлятор завершился с кодом $($p.ExitCode)" }
-          if (Test-Path (Join-Path $env:AGEN_INSTALL "autogenerator.exe")) { throw "Приложение не удалено" }
+          foreach ($gone in "autogenerator.exe", "python", "bin", "sdk") {
+            if (Test-Path (Join-Path $env:AGEN_INSTALL $gone)) { throw "Не удалено: $gone" }
+          }
+          # папка установки — она же папка данных: данные пользователя остаются
+          foreach ($kept in "db", "backups") {
+            if (-not (Test-Path (Join-Path $env:AGEN_INSTALL $kept))) { throw "Удаление стёрло данные: нет $kept" }
+          }
           $bin = Join-Path $env:AGEN_INSTALL "bin"
           $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
           if ($userPath -split ";" | Where-Object { $_.TrimEnd("\") -ieq $bin }) { throw "agen остался в PATH" }

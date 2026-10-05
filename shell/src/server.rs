@@ -19,17 +19,24 @@ use std::time::{Duration, Instant};
 const READY: &str = "AGEN_SERVER_READY";
 const ERROR: &str = "AGEN_SERVER_ERROR";
 const LOG_LINES: usize = 200;
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Сколько ждать ответа на просьбу остановиться.
+const SHUTDOWN_REQUEST_SECS: u64 = 3;
+/// Сколько ждать, пока сервер завершится сам после просьбы.
+const STOP_TIMEOUT_SECS: u64 = 10;
+/// Дольше остановка сервера (`ServerProcess::shutdown`) не длится: дальше процесс завершается.
+pub const STOP_BUDGET: Duration = Duration::from_secs(SHUTDOWN_REQUEST_SECS + STOP_TIMEOUT_SECS);
 
 #[derive(Debug)]
 pub enum StartError {
-    /// Сервер сам сказал, почему не запустился: повтор с теми же настройками не поможет.
+    /// Повтор с теми же настройками не поможет: сервер сам сказал, почему не запустился, или его
+    /// не из чего запустить (нет Python приложения, нет `.venv` в копии исходников).
     Reported {
         code: String,
         message: String,
         hint: Option<String>,
+        log: String,
     },
-    /// Python не найден, процесс не запустился, упал или не ответил вовремя.
+    /// Процесс сервера упал при запуске или не ответил вовремя.
     Failed { message: String, log: String },
 }
 
@@ -187,8 +194,10 @@ pub fn start(
     job: Option<&Job>,
     timeout: Duration,
 ) -> Result<ServerProcess, StartError> {
-    let python = find_python(launch).map_err(|message| StartError::Failed {
+    let python = find_python(launch).map_err(|message| StartError::Reported {
+        code: "python_not_found".into(),
         message,
+        hint: None,
         log: String::new(),
     })?;
     let mut cmd = Command::new(&python.exe);
@@ -224,8 +233,10 @@ pub fn start(
         python.exe.display(),
         home.display()
     ));
-    let mut child = cmd.spawn().map_err(|e| StartError::Failed {
+    let mut child = cmd.spawn().map_err(|e| StartError::Reported {
+        code: "server_spawn_failed".into(),
         message: format!("Сервер не запустился ({}): {e}", python.exe.display()),
+        hint: Some("Windows не запустил Python приложения: проверьте антивирус и политику запуска программ.".into()),
         log: String::new(),
     })?;
     if let Some(job) = job {
@@ -258,11 +269,13 @@ pub fn start(
             }
             Ok(Signal::Error(e)) => {
                 let _ = wait_exit(&mut child, Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(300)); // дочитать последние строки
                 let text = |k: &str| e[k].as_str().map(str::to_string);
                 let err = StartError::Reported {
                     code: text("code").unwrap_or_else(|| "start_failed".into()),
                     message: text("message").unwrap_or_else(|| "Сервер не запустился".into()),
                     hint: text("hint"),
+                    log: tail(&log),
                 };
                 settings::log(&format!("Сервер не запустился: {err:?}"));
                 return Err(err);
@@ -309,6 +322,19 @@ fn wait_exit(child: &mut Child, timeout: Duration) -> bool {
     false
 }
 
+/// Чем кончилась остановка сервера.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// Сервер уже завершился до просьбы (как — в строке).
+    Exited(String),
+    /// Сервер остановился сам по просьбе, код выхода 0.
+    Clean,
+    /// Сервер остановился сам по просьбе, но с ошибкой (как — в строке).
+    Failed(String),
+    /// Сервер не остановился сам, процесс завершён (почему — в строке).
+    Killed(String),
+}
+
 impl ServerProcess {
     /// Процесс завершился: как именно (иначе None).
     pub fn exited(&mut self) -> Option<String> {
@@ -328,22 +354,36 @@ impl ServerProcess {
     }
 
     /// Остановить: попросить сервер (он закроет базу и исполнители), а если не успел — завершить.
-    pub fn shutdown(&mut self, token: &str) {
-        if self.exited().is_some() {
-            return;
+    /// Длится не дольше `STOP_BUDGET`.
+    pub fn shutdown(&mut self, token: &str) -> Stop {
+        if let Some(how) = self.exited() {
+            return Stop::Exited(how);
         }
         let asked = http::request(
             self.port,
             "POST",
             "/api/system/shutdown",
             Some(token),
-            Duration::from_secs(3),
+            Duration::from_secs(SHUTDOWN_REQUEST_SECS),
         );
-        if asked.is_err() || !wait_exit(&mut self.child, STOP_TIMEOUT) {
-            settings::log("Сервер не остановился сам: процесс завершён");
+        let why = match asked {
+            Ok(r) if r.status == 202 => (!wait_exit(&mut self.child, Duration::from_secs(STOP_TIMEOUT_SECS)))
+                .then(|| format!("не завершился за {STOP_TIMEOUT_SECS} с после просьбы остановиться")),
+            Ok(r) => Some(format!("на просьбу остановиться ответил кодом {}", r.status)),
+            Err(e) => Some(format!("не ответил на просьбу остановиться: {e}")),
+        };
+        if let Some(why) = why {
+            settings::log(&format!("Сервер {why}: процесс завершён"));
             let _ = self.child.kill();
+            let _ = self.child.wait();
+            return Stop::Killed(why);
         }
-        let _ = self.child.wait();
+        match self.child.try_wait() {
+            Ok(Some(status)) if status.success() => Stop::Clean,
+            Ok(Some(status)) => Stop::Failed(describe(status)),
+            Ok(None) => Stop::Failed("состояние процесса неизвестно".into()),
+            Err(e) => Stop::Failed(e.to_string()),
+        }
     }
 }
 

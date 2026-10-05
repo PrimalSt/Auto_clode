@@ -94,7 +94,7 @@ function DataFolder({ sys }: { sys: SystemOut }) {
   );
 }
 
-function CheckResult({ out }: { out: CheckOut }) {
+function CheckResult({ out, sys }: { out: CheckOut; sys: SystemOut }) {
   const bridge = window.__AGEN__;
   if (!out.modules.length) return <Text size="sm">Изменённых модулей нет: с последнего применения код не менялся.</Text>;
   return (
@@ -142,7 +142,12 @@ function CheckResult({ out }: { out: CheckOut }) {
           <Stack gap="xs" align="flex-start">
             <Text size="sm">Изменились модули, которые работают в самом сервере: их новый код заработает после перезапуска.</Text>
             {bridge?.restart ? (
-              <Button size="xs" onClick={() => void bridge.restart?.()}>
+              <Button
+                size="xs"
+                onClick={() =>
+                  confirmRestart(sys, "Перезапустить приложение?", "Сервер приложения запустится заново с новым кодом.", () => bridge.restart?.())
+                }
+              >
                 Перезапустить приложение
               </Button>
             ) : (
@@ -163,6 +168,8 @@ function DevMode({ sys }: { sys: SystemOut }) {
   const [out, setOut] = useState<CheckOut | null>(null);
   const [error, setError] = useState<unknown>(null);
   const source = settings.data?.dev_source ?? sys.dev_source;
+  // `agen serve --dev` у установленного приложения: режим разработчика есть, а копии исходников нет
+  const canCheck = sys.dev && !!sys.dev_source;
   const enable = async () => {
     const path = await bridge?.pickFolder?.({ title: "Копия исходников Autogenerator" });
     if (!path) return;
@@ -203,10 +210,15 @@ function DevMode({ sys }: { sys: SystemOut }) {
           {sys.dev ? "включён" : "выключен"}
         </Badge>
       </Group>
-      {sys.dev ? (
+      {canCheck ? (
         <Text size="sm">
           Код модулей — из <Code>{source}</Code>. Поправьте модуль и нажмите «Проверить и применить»: сначала пройдут его тесты, и только
           потом приложение начнёт считать с новым кодом. Если тесты не прошли, всё работает по-старому.
+        </Text>
+      ) : sys.dev ? (
+        <Text size="sm" c="dimmed">
+          Сервер запущен в режиме разработчика, но не из копии исходников, поэтому проверять и применять изменённые модули не из чего.
+          Запустите <Code>uv run agen serve --dev</Code> в копии исходников.
         </Text>
       ) : (
         <Text size="sm" c="dimmed">
@@ -215,7 +227,7 @@ function DevMode({ sys }: { sys: SystemOut }) {
         </Text>
       )}
       <Group gap="xs">
-        {sys.dev && (
+        {canCheck && (
           <Button size="xs" onClick={check} loading={!!jobId}>
             Проверить и применить
           </Button>
@@ -238,7 +250,7 @@ function DevMode({ sys }: { sys: SystemOut }) {
       </Group>
       <JobProgress jobId={jobId} />
       <ErrorAlert error={error} />
-      {out && <CheckResult out={out} />}
+      {out && <CheckResult out={out} sys={sys} />}
     </Stack>
   );
 }

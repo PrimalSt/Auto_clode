@@ -29,7 +29,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = "3.12"
+PYTHON = "3.12.11"
+"""Python приложения — точная версия: установщик не должен меняться от того, что вышла новая
+3.12.x (новую версию ставят осознанно, вместе с версией uv в задаче CI «Установщик»)."""
 UI_INDEX = ROOT / "packages" / "server" / "src" / "autogenerator" / "server" / "ui" / "index.html"
 WINDOWS = sys.platform == "win32"
 
@@ -58,6 +60,42 @@ def python_exe(root: Path) -> Path:
 
 def folder_size(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+
+
+# Команда agen запускает Python приложения так же изолированно, как оболочка — сервер, а Jupyter —
+# ядро: PYTHONHOME и PYTHONPATH пользователя не действуют, пакеты из профиля пользователя и папка,
+# где запущена команда, не подмешиваются к модулям приложения; ввод-вывод — UTF-8. В .cmd — только
+# ASCII: cmd.exe читает файл в кодовой странице консоли.
+AGEN_CMD = """\
+@echo off
+setlocal
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "PYTHONNOUSERSITE=1"
+set "PYTHONSAFEPATH=1"
+set "PYTHONUTF8=1"
+"%~dp0..\\python\\python.exe" -m autogenerator.cli %*
+exit /b %ERRORLEVEL%
+"""
+
+AGEN_SH = """\
+#!/bin/sh
+unset PYTHONHOME PYTHONPATH
+export PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 PYTHONUTF8=1
+exec "$(dirname "$0")/../python/bin/python3" -m autogenerator.cli "$@"
+"""
+
+
+def write_agen(bin_dir: Path) -> Path:
+    """Команда ``agen`` в ``bin`` (``agen.cmd`` в Windows, ``agen`` — в других системах)."""
+    if WINDOWS:
+        path = bin_dir / "agen.cmd"
+        path.write_text(AGEN_CMD.replace("\n", "\r\n"), encoding="ascii", newline="")
+    else:
+        path = bin_dir / "agen"
+        path.write_text(AGEN_SH, encoding="ascii")
+        path.chmod(0o755)
+    return path
 
 
 def build(out: Path) -> None:
@@ -94,13 +132,7 @@ def build(out: Path) -> None:
 
     print("== Команда agen", flush=True)
     bin_dir.mkdir()
-    if WINDOWS:
-        cmd = '@"%~dp0..\\python\\python.exe" -m autogenerator.cli %*\r\n'
-        (bin_dir / "agen.cmd").write_text(cmd, encoding="ascii")
-    else:
-        sh = bin_dir / "agen"
-        sh.write_text('#!/bin/sh\nexec "$(dirname "$0")/../python/bin/python3" -m autogenerator.cli "$@"\n')
-        sh.chmod(0o755)
+    agen = write_agen(bin_dir)
 
     print("== Проверка", flush=True)
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
@@ -108,6 +140,14 @@ def build(out: Path) -> None:
     check = "import autogenerator.server, autogenerator.worker, autogenerator.api, ipykernel; print('ok')"
     subprocess.run([str(py), "-c", check], check=True, env=env, cwd=out)
     subprocess.run([str(py), "-m", "autogenerator.cli", "--help"], check=True, env=env, cwd=out, capture_output=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        # окружение пользователя не мешает agen: чужие PYTHONHOME и PYTHONPATH, а в текущей папке —
+        # пакет autogenerator, который заслонил бы модули приложения
+        trap = Path(tmp) / "autogenerator"
+        trap.mkdir()
+        (trap / "__init__.py").write_text("raise ImportError('agen взял чужой пакет autogenerator')\n")
+        hostile = {**os.environ, "PYTHONHOME": tmp, "PYTHONPATH": tmp}
+        subprocess.run([str(agen), "--help"], check=True, env=hostile, cwd=tmp, capture_output=True)
     with tempfile.TemporaryDirectory() as tmp:
         schema = Path(tmp) / "openapi.json"
         subprocess.run([str(py), "-m", "autogenerator.server", "--openapi", str(schema)], check=True, env=env, cwd=out)

@@ -56,7 +56,11 @@ class JobInfo(BaseModel):
     id: str
     kind: str = Field(description="Тип задания: upload, run, import_theme, draft_source…")
     title: str = ""
-    lane: str = Field("main", description="Очередь: main — загрузки и запуски, light — быстрые задания")
+    lane: str = Field(
+        "main",
+        description="Очередь заданий сервера: main — загрузки, запуски и импорт шаблонов, preview — превью "
+        "узла и слайда, dev — проверка изменённых модулей в режиме разработчика",
+    )
     status: JobStatus = JobStatus.QUEUED
     progress: JobProgress | None = None
     result: Any = Field(None, description="Итог задания (JSON); вид зависит от kind")

@@ -123,7 +123,11 @@ def restart_executors(state: StateDep) -> ModulesOut:
 @router.post("/api/modules/check", status_code=status.HTTP_202_ACCEPTED)
 def check_modules(body: ModulesCheckIn, state: StateDep) -> JobInfo:
     """Режим разработчика: тесты изменённых модулей, и если прошли — исполнители с новым кодом
-    (задание; итог — ``ModulesCheckOut``)."""
+    (задание; итог — ``ModulesCheckOut``). Перезапущенные исполнители загружают весь код с
+    диска, поэтому новый код применяется, только если проверены и прошли тесты все модули,
+    изменённые после прошлого применения: со списком ``modules`` остальные изменённые модули
+    не применяются и остаются изменёнными. Отмена задания останавливает тесты, и новый код не
+    применяется."""
     root = devmode.source_root()
     if not state.settings.dev or root is None:
         raise AgenError(
@@ -132,20 +136,34 @@ def check_modules(body: ModulesCheckIn, state: StateDep) -> JobInfo:
             hint="Укажите папку с исходниками на экране «Модули» в окне приложения или запустите "
             "`uv run agen serve --dev` в копии исходников.",
         )
-    unknown = [m for m in body.modules or [] if not (root / "packages" / m).is_dir()]
-    if unknown:
-        known = ", ".join(sorted(p.name for p in (root / "packages").iterdir() if p.is_dir()))
-        raise AgenError(ErrorCode.SPEC_INVALID, f"Нет модулей: {', '.join(unknown)}", hint=f"Есть: {known}")
+    asked: list[str] | None = None
+    if body.modules is not None:
+        asked, unknown = devmode.resolve_modules(root, body.modules)
+        if unknown:
+            known = ", ".join(devmode.known_modules(root))
+            raise AgenError(ErrorCode.SPEC_INVALID, f"Нет модулей: {', '.join(unknown)}", hint=f"Есть: {known}")
     since = state.applied_at
 
     def job(ctx: JobContext) -> dict[str, object]:
-        names = body.modules if body.modules is not None else devmode.changed_modules(root, since)
+        changed = devmode.changed_modules(root, since)
+        names = asked if asked is not None else changed
         started = time.time()
         results = devmode.check_modules(root, names, ctx)
-        ok = bool(names) and len(results) == len(names) and all(r.ok for r in results)
+        if ctx.cancelled():
+            raise AgenError(ErrorCode.CANCELLED, "Проверка модулей отменена: новый код не применён")
+        ok = bool(names) and all(r.ok for r in results)
         applied, note = False, None
         if ok and body.apply:
-            if state.busy(besides=ctx.job_id):
+            untested = [m for m in changed if m not in names]
+            during = devmode.changed_modules(root, started)
+            if untested:
+                note = (
+                    f"Изменены и другие модули ({', '.join(untested)}): новый код применяется, только когда "
+                    "проверены все изменённые модули. Проверьте без списка модулей."
+                )
+            elif during:
+                note = f"Код модулей менялся во время проверки ({', '.join(during)}): повторите проверку."
+            elif state.busy(besides=ctx.job_id):
                 note = "Идут задания: новый код не применён. Повторите проверку, когда они закончатся."
             else:
                 for ex in state.executors.values():

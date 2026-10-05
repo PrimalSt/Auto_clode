@@ -99,8 +99,13 @@ mod imp {
 
 pub use imp::{total_memory, Job};
 
-/// Объект задания с пределом памяти на процесс (`MEMORY_SHARE` физической памяти).
+/// Предел памяти одного процесса в байтах (`MEMORY_SHARE` физической памяти); 0 — предела нет
+/// (вне Windows или память не узнать).
+pub fn memory_limit() -> u64 {
+    (total_memory() as f64 * MEMORY_SHARE) as u64
+}
+
+/// Объект задания с пределом памяти на процесс (`memory_limit`).
 pub fn for_server() -> Result<Job, String> {
-    let limit = (total_memory() as f64 * MEMORY_SHARE) as u64;
-    Job::new(limit)
+    Job::new(memory_limit())
 }

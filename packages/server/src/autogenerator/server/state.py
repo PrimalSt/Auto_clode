@@ -148,6 +148,9 @@ class ServerState:
         }
         worker = RemoteWorker(executors["main"], executors["light"], executors["preview"])
         home = Home.open(settings.home, write=True, worker=worker, owner="приложение Autogenerator")
+        for ex in executors.values():
+            # у исполнителя без консоли (pythonw) вывод идёт сюда, а не в никуда
+            ex.env.setdefault("AGEN_EXECUTOR_LOG", str(home.folder.root / "logs" / f"executor-{ex.name}.log"))
         bus = LocalEventBus()
         # очередь dev — проверка модулей тестами в режиме разработчика, не мешает загрузкам и превью
         state = cls(settings, home, bus, LocalJobQueue(bus, lanes=("main", "preview", "dev")), executors)
